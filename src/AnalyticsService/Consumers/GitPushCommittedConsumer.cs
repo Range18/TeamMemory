@@ -12,7 +12,7 @@ public sealed class GitPushCommittedConsumer : IConsumer<GitPushCommitted>
 
     public Task Consume(ConsumeContext<GitPushCommitted> context)
     {
-        _logger.LogInformation("Получен пуш в ветку {Branch}", context.Message.Branch);
+        _logger.LogInformation("Received push to branch {Branch}", context.Message.Branch);
         return Task.CompletedTask;
     }
 }

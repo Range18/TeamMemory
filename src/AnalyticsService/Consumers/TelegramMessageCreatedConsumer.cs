@@ -13,9 +13,9 @@ public sealed class TelegramMessageCreatedConsumer : IConsumer<TelegramMessageCr
     public Task Consume(ConsumeContext<TelegramMessageCreated> context)
     {
         _logger.LogInformation(
-            "Получено сообщение из Telegram: ChatId={ChatId}, MessageId={MessageId}, Sender={SenderUsername}",
+            "Successfully received event from RabbitMQ! EventId: {EventId}, ChatId: {ChatId}, Sender: {SenderUsername}",
+            context.Message.EventId,
             context.Message.ChatId,
-            context.Message.MessageId,
             context.Message.SenderUsername);
 
         return Task.CompletedTask;

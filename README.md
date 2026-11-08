@@ -1,104 +1,94 @@
 # AI-Агент для анализа активности команды
 
+> **Кратко:** TeamMemory собирает события из рабочих чатов и Git-репозиториев, передаёт их через RabbitMQ и анализирует активность команды: блокеры, зависшие задачи и прогресс. Сейчас реализован только Telegram-сценарий: webhook → Ingestion → RabbitMQ → Analytics.
+
 ## О проекте
 
-Система представляет собой набор микросервисов, которые подключаются к рабочим чатам (Telegram) и Git-репозиториям (GitHub).
-Агент анализирует сообщения, коммиты и пул-реквесты, автоматически выявляет блокеры и зависшие задачи,
-а затем формирует для руководителя ежедневные сводки (дайджесты) по прогрессу команды и рискам.
-
-> **Текущий статус:** это инфраструктурный каркас. Реальные Telegram/GitHub-коннекторы, хранение состояния,
-> AI-анализ, расписание дайджестов и SignalR ещё не реализованы. Сейчас проверяется только сквозная передача
-> события через RabbitMQ: Ingestion → Analytics.
+Проект состоит из трёх .NET-микросервисов: Ingestion принимает события, Analytics обрабатывает их, Dashboard — каркас для дайджестов.
+GitHub-коннекторы, база данных, AI-анализ, дайджесты и SignalR — в планах.
 
 ## Архитектура
-
-Проект состоит из трёх микросервисов на .NET 10 и использует RabbitMQ (через MassTransit) для асинхронного обмена сообщениями:
-
-1. **Ingestion Service** — сбор и нормализация данных (Telegram, GitHub).
-2. **Analytics Service** — анализ задач, выявление блокеров и вычисление рисков.
-3. **Dashboard Service** — предоставление дайджестов и real-time уведомлений (SignalR).
-
-Целевая схема:
 
 ```mermaid
 flowchart LR
     T[Telegram] --> I[Ingestion Service]
-    G[GitHub] --> I
-    I -->|MassTransit / RabbitMQ| A[Analytics Service]
+    G[GitHub] -.-> I
+    I -->|RabbitMQ / MassTransit| A[Analytics Service]
     A --> D[Dashboard Service]
     D --> U[Руководитель]
 ```
 
-## Структура репозитория
+- **Ingestion** — Telegram webhook, публикация `TelegramMessageCreated`.
+- **Analytics** — консьюмеры `TelegramMessageCreated` и `GitPushCommitted`, пока только логирование.
+- **Dashboard** — каркас, SignalR не реализован.
+
+## Структура
 
 ```text
-TeamMemory/
-  TeamMemory.sln
-  global.json
-  docker-compose.yml
-  README.md
-  .gitignore
-
-  src/
-    IngestionService/
-      Program.cs
-      Contracts/PublishTelegramMessageRequest.cs
-      appsettings.json
-      Properties/launchSettings.json
-    AnalyticsService/
-      Program.cs
-      Consumers/TelegramMessageCreatedConsumer.cs
-      Consumers/GitPushCommittedConsumer.cs
-      appsettings.json
-      Properties/launchSettings.json
-    DashboardService/
-      Program.cs
-      appsettings.json
-      Properties/launchSettings.json
-
-  shared/
-    Shared.Contracts/
-      IntegrationEventBase.cs
-      IntegrationEventSources.cs
-      Telegram/
-      Git/
+src/IngestionService/     # webhook Telegram, публикация событий
+src/AnalyticsService/     # консьюмеры RabbitMQ
+src/DashboardService/     # каркас
+shared/Shared.Contracts/  # контракты событий
+.env.example              # шаблон локальных переменных
+docker-compose.yml        # RabbitMQ
 ```
 
 ## Требования
 
-- .NET SDK **10.0.x** (проект зафиксирован через `global.json`);
-- Docker и Docker Compose — для локального RabbitMQ;
-- свободные порты `5081`, `5082`, `5672`, `15672`.
+- .NET SDK 10.0.x
+- Docker и Docker Compose
+- ngrok
+- Telegram-бот от @BotFather, добавленный в группу
+- свободные порты `5081`, `5082`, `5672`, `15672` (`4040` — инспектор ngrok)
+
+## Переменные окружения
+
+`.env` лежит в корне и не коммитится. Шаблон — `.env.example`:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+| Переменная | Назначение |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather |
+| `WEBHOOK_BASE_URL` | Личный ngrok-адрес, например `https://your-name.ngrok-free.dev` |
+
+`WEBHOOK_BASE_URL` указывается без завершающего `/`. Переменные ОС имеют приоритет над `.env`.
+
+## Telegram и ngrok
+
+1. Создайте бота в @BotFather и добавьте токен в `.env`.
+2. Добавьте бота в группу и отключите privacy mode (`/setprivacy` → `Disable`) или сделайте его администратором.
+3. Один раз авторизуйте ngrok:
+
+```powershell
+ngrok config add-authtoken <TOKEN>
+```
+
+4. Запустите туннель:
+
+```powershell
+ngrok http 5081
+```
+
+5. Скопируйте адрес из лога в `.env`:
+
+```text
+WEBHOOK_BASE_URL=https://your-name.ngrok-free.dev
+```
+
+Домен постоянный и у каждого разработчика свой. Инспектор запросов — <http://127.0.0.1:4040>, работает только при запущенном ngrok.
 
 ## Запуск RabbitMQ
 
 ```bash
 docker compose up -d rabbitmq
-docker compose ps
 ```
 
-RabbitMQ Management UI: <http://localhost:15672>
-
-Логин/пароль для локальной разработки:
-
-```text
-teammemory / teammemory
-```
-
-Это только dev-учётная запись, заданная в `docker-compose.yml` и `appsettings.json`.
-Для реальных окружений используйте переменные окружения или секреты, а не файлы в git.
-
-Если используется уже установленный локальный RabbitMQ, настройки можно переопределить:
-
-```powershell
-$env:RabbitMq__Host = "localhost"
-$env:RabbitMq__Username = "guest"
-$env:RabbitMq__Password = "guest"
-```
+UI: <http://localhost:15672>, логин/пароль `teammemory` / `teammemory`.
 
 ## Сборка
-
-Из корня репозитория:
 
 ```bash
 dotnet build TeamMemory.sln
@@ -106,110 +96,71 @@ dotnet build TeamMemory.sln
 
 ## Запуск сервисов
 
-Откройте три терминала.
-
-**1. Analytics Service** — запускать первым, чтобы очереди были созданы до публикации:
+**Терминал 1 — Analytics** (запускать первым, чтобы очереди существовали до публикации):
 
 ```bash
 dotnet run --project src/AnalyticsService/AnalyticsService.csproj
 ```
 
-**2. Ingestion Service**:
+**Терминал 2 — Ingestion**:
 
 ```bash
 dotnet run --project src/IngestionService/IngestionService.csproj
 ```
 
-Ingestion слушает `http://localhost:5081`.
+Ingestion слушает `http://localhost:5081` и в Development сам вызывает `SetWebhook`. Ожидаемый лог:
 
-**3. Dashboard Service** (опционально):
+```text
+Telegram webhook set: https://your-name.ngrok-free.dev/api/telegram/webhook
+```
+
+**Dashboard** (опционально, порт `5082`):
 
 ```bash
 dotnet run --project src/DashboardService/DashboardService.csproj
 ```
 
-Dashboard слушает `http://localhost:5082`.
-
-## Smoke-тест
-
-Для проверки сквозной передачи события отправьте тестовое сообщение в dev-endpoint Ingestion Service:
-
-```bash
-curl -X POST http://localhost:5081/api/dev/telegram/messages \
-  -H "Content-Type: application/json" \
-  -d "{\"chatId\":-1001234567890,\"messageId\":1,\"senderUsername\":\"alice\",\"text\":\"blocked on payments API\",\"replyToMessageId\":null}"
-```
-
-В Windows PowerShell используйте `curl.exe`:
+## Проверка
 
 ```powershell
-curl.exe -X POST http://localhost:5081/api/dev/telegram/messages `
-  -H "Content-Type: application/json" `
-  -d '{"chatId":-1001234567890,"messageId":1,"senderUsername":"alice","text":"blocked on payments API","replyToMessageId":null}'
+$token = ((Get-Content .env | Where-Object { $_ -match '^\s*TELEGRAM_BOT_TOKEN\s*=' }) -split '=',2)[1].Trim()
+Invoke-RestMethod "https://api.telegram.org/bot$token/getWebhookInfo" |
+    Select-Object -ExpandProperty result |
+    Format-List url, pending_update_count, last_error_message
 ```
 
-Ожидаемый результат:
+Должно быть: `url` — твой ngrok-адрес, `pending_update_count: 0`, `last_error_message` пустой.
 
-- Ingestion возвращает `202 Accepted` и `eventId`;
-- в логе Analytics Service появляется строка `Получено сообщение из Telegram...`;
-- в RabbitMQ Management UI появляются exchange и очередь.
-
-> Важно: endpoint `/api/dev/telegram/messages` доступен только в окружении `Development`.
-> Если опубликовать сообщение до запуска Analytics, exchange может не иметь привязанной очереди, и сообщение будет потеряно.
-
-## События и маршрутизация (RabbitMQ)
-
-MassTransit создаёт для каждого типа сообщения exchange и автоматически связывает его с очередями консьюмеров.
-Для контракта `Shared.Contracts.Telegram.TelegramMessageCreated` имя exchange в RabbitMQ выглядит так:
+Отправьте сообщение в группу. В логах:
 
 ```text
-Shared.Contracts.Telegram:TelegramMessageCreated
+[Ingestion] Received Telegram webhook. ChatId: ..., MessageId: .... Publishing event with EventId: <GUID>
+[Analytics] Successfully received event from RabbitMQ! EventId: <GUID>, ChatId: ..., Sender: ...
 ```
 
-Namespace и имя типа разделяются двоеточием. Exchange по умолчанию имеет тип **fanout**.
-Публикация идёт в exchange, а маршрутизация до очередей выполняется через bindings.
-**Routing key не равен полному имени C#-класса** и для стандартного publish не используется.
+`EventId` должен совпадать.
 
-Все изменения в контрактах (событиях) делаются **только** в проекте `shared/Shared.Contracts`.
+> Без Telegram можно использовать `POST /api/dev/telegram/messages` (только Development).
 
-| C# Тип | Источник (Source) | Описание |
-| :--- | :--- | :--- |
-| `TelegramMessageCreated` | telegram | Новое сообщение в чате |
-| `TelegramMessageEdited` | telegram | Изменение сообщения |
-| `GitPushCommitted` | github | Пуш с коммитами |
-| `GitPullRequestOpened` | github | Создан Pull Request |
-| `GitPullRequestMerged` | github | Pull Request смержен |
-| `GitPullRequestClosed` | github | Pull Request закрыт без мержа |
-| `GitPullRequestReviewed` | github | Общее ревью PR (Approve / Request Changes) |
-| `GitPullRequestReviewCommentAdded` | github | Комментарий к конкретной строке в PR |
+## События и RabbitMQ
 
-Сейчас в Analytics Service реализованы консьюмеры только для `TelegramMessageCreated` и `GitPushCommitted`.
-Для остальных событий контракты уже готовы, но консьюмеры и очереди появятся позже.
+MassTransit создаёт exchange `Shared.Contracts.Telegram:TelegramMessageCreated` (fanout) и очередь консьюмера.
+Публикация идёт в exchange, routing key не используется.
 
-## Правила изменения контрактов
+Контракты меняются только в `shared/Shared.Contracts`. Переименование типа или namespace ломает топологию RabbitMQ.
+Новые поля добавляются как nullable, ломающие изменения — через новую версию namespace.
 
-- Контракты живут только в `Shared.Contracts`; копировать их в сервисы нельзя.
-- `Shared.Contracts` не должен зависеть от MassTransit — это чистые DTO.
-- Нельзя переименовывать или переносить тип/namespace без версионирования: MassTransit использует имя типа в топологии RabbitMQ.
-- Новые поля в уже опубликованные события добавляются как nullable/optional.
-- Ломающие изменения оформляются через новую версию namespace (`...V1`, `...V2`) с периодом параллельной публикации.
-- В monorepo сервисы собираются вместе, но при независимом деплое контракты нужно версионировать как отдельный пакет.
+Сейчас реализованы консьюмеры `TelegramMessageCreated` и `GitPushCommitted`. Остальные контракты готовы, консьюмеров пока нет.
 
-## Ограничения текущего этапа
+## Ограничения
 
-- Нет реальных Telegram Bot API и GitHub webhooks.
-- Нет базы данных и хранения состояния — Analytics пока только логирует события.
-- Нет AI/LLM-анализа, расчёта блокеров и ежедневных дайджестов.
-- Нет SignalR-хаба и real-time уведомлений.
-- Нет аутентификации webhook-ов и HMAC-проверки GitHub.
-- Нет retry-политик, outbox, идемпотентности и обработки dead-letter очередей.
-- Нет автотестов и CI.
-
-Эти пункты — следующий этап развития, а не готовый функционал текущего каркаса.
+- GitHub webhooks не реализованы.
+- Нет БД, AI-анализа, дайджестов и SignalR.
+- Нет `secret_token` для Telegram webhook и HMAC для GitHub.
+- Нет retry/outbox/idempotency/DLQ, автотестов и CI.
 
 ## Лицензии
 
 - .NET — MIT.
 - RabbitMQ — MPL 2.0.
-- MassTransit **8.5.12** — Apache-2.0. Версия зафиксирована в проектах.
-- MassTransit **9.x** — коммерческий продукт, требующий лицензии. Не обновляйте пакет до 9.x без согласования лицензии.
+- MassTransit **8.5.12** — Apache-2.0. Версия 9.x коммерческая, не обновлять без согласования.
