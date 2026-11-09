@@ -4,6 +4,7 @@ import {
   HubConnectionState,
   type HubConnection,
 } from "@microsoft/signalr";
+import { GroupDigest } from "./GroupDigest";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "";
 
@@ -52,8 +53,8 @@ export default function App() {
     initData && telegram?.requestChat && (telegram.isVersionAtLeast?.("9.6") ?? true),
   );
 
-  const authHeaders = useMemo(
-    () => (initData ? { "X-Telegram-Init-Data": initData } : {}),
+  const authHeaders = useMemo<Record<string, string>>(
+    (): Record<string, string> => (initData ? { "X-Telegram-Init-Data": initData } : {}),
     [initData],
   );
 
@@ -64,6 +65,13 @@ export default function App() {
   const [preparedButtonId, setPreparedButtonId] = useState<string | null>(null);
   const [preparingButton, setPreparingButton] = useState(false);
   const [addMessage, setAddMessage] = useState<string | null>(null);
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [digestRevisions, setDigestRevisions] = useState<Record<string, number>>({});
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
+
+  useEffect(() => {
+    setSelectedChatId((current) => groups.some((g) => g.chatId === current) ? current : groups[0]?.chatId ?? null);
+  }, [groups]);
 
   const loadGroups = useCallback(async () => {
     try {
@@ -122,13 +130,25 @@ export default function App() {
       connection.on("GroupUpdated", (group: Group) => {
         setGroups((current) => mergeGroup(current, group));
       });
+      connection.on("DigestUpdated", (message: { chatId: string; date: string }) => {
+        setDigestRevisions((current) => ({ ...current, [message.chatId]: (current[message.chatId] ?? 0) + 1 }));
+      });
       connection.onreconnecting(() => setHubState("Переподключение..."));
-      connection.onreconnected(() => setHubState("Онлайн"));
+      connection.onreconnected(() => {
+        if (disposed) return;
+        setHubState("Онлайн");
+        setConnectionEpoch((current) => current + 1);
+        void loadGroups();
+      });
       connection.onclose(() => setHubState("Нет соединения"));
 
       try {
         await connection.start();
-        if (!disposed) setHubState("Онлайн");
+        if (!disposed) {
+          setHubState("Онлайн");
+          setConnectionEpoch((current) => current + 1);
+          void loadGroups();
+        }
       } catch {
         if (!disposed) setHubState("Нет соединения");
       }
@@ -168,7 +188,7 @@ export default function App() {
         <div>
           <p className="eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</p>
           <h1>Мои группы</h1>
-          <p className="subtitle">Ваши подключённые группы · данные PostgreSQL · обновления SignalR</p>
+          <p className="subtitle">Ваши группы и ежедневные дайджесты команды</p>
         </div>
         <div className={`connection ${hubState === "Онлайн" ? "online" : "offline"}`}>
           <span className="dot" /> {hubState}
@@ -180,7 +200,10 @@ export default function App() {
           <strong>{groups.length}</strong> подключённых групп
         </div>
         <div className="toolbar-actions">
-          <button className="secondary-button" onClick={() => void loadGroups()} disabled={loading}>
+          <button className="secondary-button" onClick={() => {
+            void loadGroups();
+            setConnectionEpoch((current) => current + 1);
+          }} disabled={loading}>
             Обновить
           </button>
           <button onClick={addGroup} disabled={!canUseRequestChat || !preparedButtonId || preparingButton}>
@@ -221,6 +244,14 @@ export default function App() {
           ))}
         </section>
       )}
+      {groups.length > 0 && <div className="digest-selector">
+        <label htmlFor="digest-group">Дайджест для группы</label>
+        <select id="digest-group" value={selectedChatId ?? ""} onChange={(e) => setSelectedChatId(e.target.value)}>
+          {groups.map((group) => <option key={group.chatId} value={group.chatId}>{group.title}</option>)}
+        </select>
+      </div>}
+      {selectedChatId && <GroupDigest key={selectedChatId} chatId={selectedChatId} apiUrl={API_URL}
+        headers={authHeaders} revision={`${connectionEpoch}:${digestRevisions[selectedChatId] ?? 0}`} />}
     </main>
   );
 }

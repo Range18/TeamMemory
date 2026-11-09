@@ -35,5 +35,16 @@ button:disabled { opacity: .6; cursor: default; }
 @media (max-width: 620px) { .page { padding: 28px 16px; } .header { flex-direction: column; } .group-card { align-items: flex-start; } .status { margin-left: auto; } .meta { flex-direction: column; gap: 4px; } }
 .toolbar-actions { display: flex; align-items: center; gap: 8px; }
 .secondary-button { background: #eaf0f6; color: #334155; }
+.digest-selector { display: flex; align-items: center; gap: 12px; margin-top: 28px; }
+.digest-selector label, .digest-date { color: #475569; font-size: 13px; }
+.digest-selector select, .digest-date input { border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px; background: white; color: #17212b; font: inherit; max-width: 100%; }
+.digest { margin-top: 14px; padding: 22px; border: 1px solid #e1e6eb; border-radius: 14px; background: white; }
+.digest-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.digest-heading h2 { margin: 0; font-size: 20px; }
+.digest-date { display: grid; gap: 6px; }
+.digest-counts { display: flex; flex-wrap: wrap; gap: 10px 20px; margin: 20px 0; color: #475569; font-size: 13px; }
+.digest-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; margin: 0; }
+.digest-note { color: #64748b; font-size: 12px; margin-bottom: 0; }
+@media (max-width: 620px) { .digest-selector, .digest-heading { align-items: stretch; flex-direction: column; } .digest { padding: 16px; } }
 .hint { margin: 0 0 14px; padding: 12px 14px; border: 1px solid #dbeafe; border-radius: 12px; background: #eff6ff; color: #1e40af; font-size: 13px; }
 @media (max-width: 620px) { .toolbar { align-items: flex-start; flex-direction: column; gap: 12px; } .toolbar-actions { width: 100%; } .toolbar-actions button { flex: 1; } }

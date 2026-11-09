@@ -44,6 +44,7 @@ public sealed class TrackedTask
 {
     public Guid Id { get; set; }
     public string TeamId { get; set; } = "";
+    public long? ChatId { get; set; }
     public long EmployeeId { get; set; }
     public string Title { get; set; } = "";
     public string Status { get; set; } = "in_progress";
@@ -57,7 +58,7 @@ public sealed class TrackedTask
 }
 
 public sealed record AnalysisInput(Guid BatchId, string TeamId,
-    AnalysisMessage[] Messages, TrackedTask[] Tasks);
+    AnalysisMessage[] Messages, TrackedTask[] Tasks, long? ChatId = null);
 
 public sealed record AnalysisResult
 {

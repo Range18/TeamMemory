@@ -4,11 +4,11 @@
 
 ## О проекте
 
-Проект состоит из трёх .NET-микросервисов: Ingestion принимает события, Analytics обрабатывает их, Dashboard — каркас для дайджестов.
+Проект состоит из трёх .NET-микросервисов: Ingestion принимает события, Analytics обрабатывает их, Dashboard сохраняет результаты и формирует дайджесты для Mini App.
 Analytics сохраняет Telegram-события в PostgreSQL, анализирует группы сообщений локальной
 GGUF-моделью через LLamaSharp и публикует события задач, блокеров и риска для Dashboard.
 Запуск описан в [документации Analytics](src/AnalyticsService/README.md).
-GitHub-коннекторы, дайджесты и SignalR — в планах.
+GitHub-коннекторы — в планах. Дайджесты и обновления Mini App через SignalR реализованы в Dashboard.
 
 ## Архитектура
 
@@ -23,7 +23,7 @@ flowchart LR
 
 - **Ingestion** — Telegram webhook, публикация `TelegramMessageCreated`.
 - **Analytics** — Telegram inbox, групповой LLM-анализ, задачи и история в PostgreSQL, outbox.
-- **Dashboard** — подписки на `NewTaskReported`, `BlockerDetected`, `TaskAtRisk`; пока логирование приёма.
+- **Dashboard** — хранение событий Analytics в PostgreSQL, дайджест по шаблону, API с проверкой доступа и обновление Mini App через SignalR. [Запуск и контракт](src/DashboardService/README.md).
 
 ## Структура
 
@@ -158,7 +158,7 @@ Analytics подписан на все восемь конкретных соб�
 ## Ограничения
 
 - GitHub webhooks не реализованы.
-- Нет дайджестов и SignalR. Для AI-анализа нужно отдельно скачать GGUF-модель и настроить привязку чата к команде.
+- Для AI-анализа нужно отдельно скачать GGUF-модель и настроить привязку чата к команде. Дайджест показывает новые события за день; завершение задач и снятие блокеров пока не передаются в Dashboard.
 - Нет `secret_token` для Telegram webhook и HMAC для GitHub.
 - Inbox/outbox Analytics хранятся в PostgreSQL. Редактирования Telegram и Git пока только логируются; CI отсутствует.
 

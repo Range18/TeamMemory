@@ -37,7 +37,7 @@ public static class TaskChangeApplier
                     throw new AnalysisValidationException("Invalid new task or employee.");
                 task = new TrackedTask
                 {
-                    Id = Guid.NewGuid(), TeamId = input.TeamId, EmployeeId = employeeId,
+                    Id = Guid.NewGuid(), TeamId = input.TeamId, ChatId = input.ChatId, EmployeeId = employeeId,
                     Title = RequiredText(change.Title), StartedAt = effectiveAt, LastActivityAt = effectiveAt
                 };
                 newTasks.Add(change.NewTaskRef, task);
@@ -52,6 +52,7 @@ public static class TaskChangeApplier
                     ? tasks.GetValueOrDefault(id) ?? throw new AnalysisValidationException("Unknown task.")
                     : newTasks.GetValueOrDefault(change.NewTaskRef!) ?? throw new AnalysisValidationException("Unknown new task reference.");
                 var original = input.Tasks.SingleOrDefault(t => t.Id == task.Id);
+                task.ChatId ??= input.ChatId;
                 if (task.TeamId != input.TeamId || (original is not null && effectiveAt < original.LastActivityAt))
                     throw new AnalysisValidationException("Task is outside team or evidence is older than current state.");
                 switch (change.Action)
@@ -112,12 +113,14 @@ public static class TaskChangeApplier
         ? new BlockerDetected
         {
             Source = "analytics", CorrelationId = input.BatchId.ToString(), TeamId = input.TeamId,
+            ChatId = task.ChatId ?? input.ChatId,
             TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
             Description = description, EvidenceEventIds = change.EvidenceEventIds
         }
         : new NewTaskReported
         {
             Source = "analytics", CorrelationId = input.BatchId.ToString(), TeamId = input.TeamId,
+            ChatId = task.ChatId ?? input.ChatId,
             TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
             Description = description, EvidenceEventIds = change.EvidenceEventIds
         };

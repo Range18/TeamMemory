@@ -19,6 +19,15 @@ builder.Services.AddSingleton<TelegramInitDataValidator>();
 builder.Services.AddSingleton<TelegramChatRequestService>();
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddOptions<DigestOptions>().BindConfiguration("Digest")
+    .Validate(o => TimeZoneInfo.TryFindSystemTimeZoneById(o.TimeZone, out _), "Unknown digest time zone.")
+    .Validate(o => DigestFormatter.IsValidTemplate(o.Template), "Digest template must contain all five placeholders.")
+    .Validate(o => o.NotificationPollSeconds is >= 1 and <= 60 && o.LegacyTeamChats.Values.All(id => id != 0),
+        "Invalid digest notification settings.").ValidateOnStart();
+builder.Services.AddScoped<AnalyticsEventInbox>();
+builder.Services.AddScoped<GroupDigestService>();
+builder.Services.AddHostedService<DigestNotificationWorker>();
 
 builder.Services
     .AddAuthentication("TelegramMiniApp")
@@ -36,12 +45,16 @@ builder.Services.AddMassTransit(x =>
     x.AddConsumer<AnalyticsEventConsumer<BlockerDetected>>();
     x.AddConsumer<AnalyticsEventConsumer<TaskAtRisk>>();
     x.AddConfigureEndpointsCallback((name, endpoint) =>
-        endpoint.UseMessageRetry(r => r.Intervals(
-            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(15))));
+        endpoint.UseMessageRetry(r =>
+        {
+            r.Ignore<InvalidDataException>();
+            r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(15));
+        }));
     x.UsingRabbitMq((context, cfg) =>
     {
         cfg.Host(
             rabbitMq["Host"] ?? "localhost",
+            rabbitMq.GetValue<ushort>("Port", 5672),
             rabbitMq["VirtualHost"] ?? "/",
             h =>
             {
@@ -96,6 +109,12 @@ await using (var scope = app.Services.CreateAsyncScope())
         CREATE INDEX IF NOT EXISTS ix_group_managers_manager_telegram_id
             ON group_managers (manager_telegram_id);
         """);
+    using var schemaStream = typeof(AppDbContext).Assembly.GetManifestResourceStream("DashboardService.Data.digest-schema.sql")!;
+    using var schemaReader = new StreamReader(schemaStream);
+    await using var schemaTransaction = await db.Database.BeginTransactionAsync();
+    await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(7421983103)");
+    await db.Database.ExecuteSqlRawAsync(await schemaReader.ReadToEndAsync());
+    await schemaTransaction.CommitAsync();
 }
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -103,3 +122,5 @@ app.MapControllers();
 app.MapHub<GroupsHub>("/hubs/groups").RequireAuthorization();
 
 app.Run();
+
+public partial class Program;

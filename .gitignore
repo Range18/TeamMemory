@@ -13,6 +13,7 @@
 *.userosscache
 *.sln.docstates
 .local
+frontend/dist/
 models/*.gguf
 **/models/*.gguf
 

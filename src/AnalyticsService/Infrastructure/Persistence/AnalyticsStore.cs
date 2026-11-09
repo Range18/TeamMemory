@@ -82,10 +82,11 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
     {
         Guid id;
         string team;
+        long chatId;
         string? savedInput, savedResult;
         int attempts;
         await using (var command = Command(connection, """
-            SELECT id,team_id,input::text,result::text,attempts FROM analysis_batches
+            SELECT id,team_id,input::text,result::text,attempts,chat_id FROM analysis_batches
             WHERE status='ready' AND next_attempt_at <= now() ORDER BY created_at,id LIMIT 1
             """))
         await using (var reader = await command.ExecuteReaderAsync(ct))
@@ -95,9 +96,10 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
             savedInput = reader.IsDBNull(2) ? null : reader.GetString(2);
             savedResult = reader.IsDBNull(3) ? null : reader.GetString(3);
             attempts = reader.GetInt32(4);
+            chatId = reader.GetInt64(5);
         }
         if (savedInput is not null)
-            return new(AnalysisJson.Read<AnalysisInput>(savedInput), savedResult, attempts);
+            return new(AnalysisJson.Read<AnalysisInput>(savedInput) with { ChatId = chatId }, savedResult, attempts);
 
         var messages = new List<AnalysisMessage>();
         await using (var command = Command(connection, """
@@ -115,7 +117,7 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
             await FailBatch(connection, id, "needs_review", "More than 20 candidate tasks.", ct);
             return null;
         }
-        var input = new AnalysisInput(id, team, messages.ToArray(), tasks);
+        var input = new AnalysisInput(id, team, messages.ToArray(), tasks, chatId);
         await Execute(connection, "UPDATE analysis_batches SET input=$2::jsonb WHERE id=$1", ct, id, AnalysisJson.Write(input));
         return new(input, null, attempts);
     }
@@ -197,6 +199,7 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
             if (atRisk) await Enqueue(connection, new TaskAtRisk
             {
                 Source = "analytics", CorrelationId = task.Id.ToString(), TeamId = task.TeamId,
+                ChatId = task.ChatId,
                 TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
                 Description = description, EvidenceEventIds = []
             }, ct);

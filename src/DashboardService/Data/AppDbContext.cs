@@ -7,6 +7,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 {
     public DbSet<GroupEntity> Groups => Set<GroupEntity>();
     public DbSet<GroupManagerEntity> GroupManagers => Set<GroupManagerEntity>();
+    public DbSet<AnalyticsEventEntity> AnalyticsEvents => Set<AnalyticsEventEntity>();
+    public DbSet<DigestNotificationEntity> DigestNotifications => Set<DigestNotificationEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -32,5 +34,33 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             .WithMany(x => x.Managers)
             .HasForeignKey(x => x.ChatId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        var analyticsEvent = modelBuilder.Entity<AnalyticsEventEntity>();
+        analyticsEvent.ToTable("analytics_events");
+        analyticsEvent.HasKey(e => e.EventId);
+        analyticsEvent.Property(e => e.EventId).HasColumnName("event_id");
+        analyticsEvent.Property(e => e.ChatId).HasColumnName("chat_id");
+        analyticsEvent.Property(e => e.TeamId).HasColumnName("team_id");
+        analyticsEvent.Property(e => e.TaskId).HasColumnName("task_id");
+        analyticsEvent.Property(e => e.EmployeeId).HasColumnName("employee_id");
+        analyticsEvent.Property(e => e.Kind).HasColumnName("kind");
+        analyticsEvent.Property(e => e.Title).HasColumnName("title");
+        analyticsEvent.Property(e => e.Description).HasColumnName("description");
+        analyticsEvent.Property(e => e.EvidenceEventIds).HasColumnName("evidence_event_ids");
+        analyticsEvent.Property(e => e.OccurredAtUtc).HasColumnName("occurred_at_utc");
+        analyticsEvent.Property(e => e.ReceivedAtUtc).HasColumnName("received_at_utc");
+        analyticsEvent.HasIndex(e => new { e.ChatId, e.OccurredAtUtc }).HasDatabaseName("ix_analytics_events_chat_date");
+
+        var notification = modelBuilder.Entity<DigestNotificationEntity>();
+        notification.ToTable("digest_notifications");
+        notification.HasKey(n => n.EventId);
+        notification.Property(n => n.EventId).HasColumnName("event_id");
+        notification.Property(n => n.ChatId).HasColumnName("chat_id");
+        notification.Property(n => n.OccurredAtUtc).HasColumnName("occurred_at_utc");
+        notification.Property(n => n.CreatedAtUtc).HasColumnName("created_at_utc");
+        notification.Property(n => n.SentAtUtc).HasColumnName("sent_at_utc");
+        notification.HasOne<AnalyticsEventEntity>().WithOne().HasForeignKey<DigestNotificationEntity>(n => n.EventId)
+            .OnDelete(DeleteBehavior.Cascade);
+        notification.HasIndex(n => n.CreatedAtUtc).HasFilter("sent_at_utc IS NULL").HasDatabaseName("ix_digest_notifications_pending");
     }
 }
