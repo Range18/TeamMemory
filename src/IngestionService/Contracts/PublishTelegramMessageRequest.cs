@@ -5,4 +5,6 @@ public sealed record PublishTelegramMessageRequest(
     long MessageId,
     string SenderUsername,
     string Text,
-    long? ReplyToMessageId = null);
+    long? ReplyToMessageId = null,
+    long? SenderId = null,
+    long? ThreadId = null);

@@ -54,6 +54,9 @@ if (app.Environment.IsDevelopment())
             return Results.BadRequest(new { error = "Text is required." });
         }
 
+        if (request.SenderId is null or <= 0)
+            return Results.BadRequest(new { error = "A stable positive SenderId is required." });
+
         var message = new TelegramMessageCreated
         {
             Source = IntegrationEventSources.Telegram,
@@ -62,7 +65,9 @@ if (app.Environment.IsDevelopment())
             MessageId = request.MessageId,
             SenderUsername = request.SenderUsername,
             Text = request.Text,
-            ReplyToMessageId = request.ReplyToMessageId
+            ReplyToMessageId = request.ReplyToMessageId,
+            SenderId = request.SenderId,
+            ThreadId = request.ThreadId
         };
 
         await publishEndpoint.Publish(message);
@@ -76,7 +81,8 @@ app.MapPost("/api/telegram/webhook", async (
     IPublishEndpoint publishEndpoint,
     ILogger<Program> logger) =>
 {
-    if (update.Message is not { } message)
+    if (update.Message is not { } message || message.From is null
+        || string.IsNullOrWhiteSpace(message.Text ?? message.Caption))
     {
         return Results.Ok();
     }
@@ -89,7 +95,10 @@ app.MapPost("/api/telegram/webhook", async (
         MessageId = message.MessageId,
         SenderUsername = message.From?.Username ?? message.From?.FirstName ?? "unknown",
         Text = message.Text ?? message.Caption ?? string.Empty,
-        ReplyToMessageId = message.ReplyToMessage?.MessageId
+        ReplyToMessageId = message.ReplyToMessage?.MessageId,
+        SenderId = message.From!.Id,
+        ThreadId = message.MessageThreadId,
+        OccurredAt = new DateTimeOffset(DateTime.SpecifyKind(message.Date, DateTimeKind.Utc))
     };
 
     logger.LogInformation(

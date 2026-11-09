@@ -5,15 +5,22 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-AnalyticsService-4979564e-e942-42ec-b347-d64752e06438</UserSecretsId>
+    <LlamaBackend Condition="'$(LlamaBackend)' == ''">Cpu</LlamaBackend>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MassTransit" Version="8.5.12" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.12" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+    <PackageReference Include="LLamaSharp" Version="0.26.0" />
+    <PackageReference Include="LLamaSharp.Backend.$(LlamaBackend)" Version="0.26.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\shared\Shared.Contracts\Shared.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Infrastructure/Persistence/schema.sql" />
   </ItemGroup>
 </Project>

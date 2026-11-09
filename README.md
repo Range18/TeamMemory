@@ -1,11 +1,14 @@
 # AI-Агент для анализа активности команды
 
-> **Кратко:** TeamMemory собирает события из рабочих чатов и Git-репозиториев, передаёт их через RabbitMQ и анализирует активность команды: блокеры, зависшие задачи и прогресс. Сейчас реализован только Telegram-сценарий: webhook → Ingestion → RabbitMQ → Analytics.
+> **Кратко:** TeamMemory собирает события рабочих чатов через RabbitMQ, анализирует их локальной LLM, сохраняет задачи в PostgreSQL и передаёт Dashboard события новых задач, блокеров и риска. Сейчас реализован основной Telegram-сценарий.
 
 ## О проекте
 
 Проект состоит из трёх .NET-микросервисов: Ingestion принимает события, Analytics обрабатывает их, Dashboard — каркас для дайджестов.
-GitHub-коннекторы, база данных, AI-анализ, дайджесты и SignalR — в планах.
+Analytics сохраняет Telegram-события в PostgreSQL, анализирует группы сообщений локальной
+GGUF-моделью через LLamaSharp и публикует события задач, блокеров и риска для Dashboard.
+Запуск описан в [документации Analytics](src/AnalyticsService/README.md).
+GitHub-коннекторы, дайджесты и SignalR — в планах.
 
 ## Архитектура
 
@@ -19,8 +22,8 @@ flowchart LR
 ```
 
 - **Ingestion** — Telegram webhook, публикация `TelegramMessageCreated`.
-- **Analytics** — консьюмеры `TelegramMessageCreated` и `GitPushCommitted`, пока только логирование.
-- **Dashboard** — каркас, SignalR не реализован.
+- **Analytics** — Telegram inbox, групповой LLM-анализ, задачи и история в PostgreSQL, outbox.
+- **Dashboard** — подписки на `NewTaskReported`, `BlockerDetected`, `TaskAtRisk`; пока логирование приёма.
 
 ## Структура
 
@@ -30,7 +33,7 @@ src/AnalyticsService/     # консьюмеры RabbitMQ
 src/DashboardService/     # каркас
 shared/Shared.Contracts/  # контракты событий
 .env.example              # шаблон локальных переменных
-docker-compose.yml        # RabbitMQ
+docker-compose.yml        # RabbitMQ и PostgreSQL
 ```
 
 ## Требования
@@ -83,7 +86,7 @@ WEBHOOK_BASE_URL=https://your-name.ngrok-free.dev
 ## Запуск RabbitMQ
 
 ```bash
-docker compose up -d rabbitmq
+docker compose up -d rabbitmq postgres
 ```
 
 UI: <http://localhost:15672>, логин/пароль `teammemory` / `teammemory`.
@@ -155,9 +158,9 @@ Analytics подписан на все восемь конкретных соб�
 ## Ограничения
 
 - GitHub webhooks не реализованы.
-- Нет БД, AI-анализа, дайджестов и SignalR.
+- Нет дайджестов и SignalR. Для AI-анализа нужно отдельно скачать GGUF-модель и настроить привязку чата к команде.
 - Нет `secret_token` для Telegram webhook и HMAC для GitHub.
-- В Analytics есть retry, error queues и дедупликация в памяти; transactional inbox/outbox и CI пока отсутствуют.
+- Inbox/outbox Analytics хранятся в PostgreSQL. Редактирования Telegram и Git пока только логируются; CI отсутствует.
 
 ## Лицензии
 

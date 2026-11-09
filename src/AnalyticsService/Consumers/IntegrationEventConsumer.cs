@@ -8,8 +8,7 @@ public sealed class IntegrationEventConsumer<T>(ILogger<IntegrationEventConsumer
 {
     public Task Consume(ConsumeContext<T> context)
     {
-        // Task tracking and LLM analysis can be invoked here. Do not swallow failures:
-        // MassTransit acknowledges the delivery only after this task succeeds.
+        // Edits and Git processing are outside the initial Telegram analysis scenario.
         logger.LogInformation("Received {EventType} from {Source}", typeof(T).Name, context.Message.Source);
         return Task.CompletedTask;
     }

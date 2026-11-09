@@ -13,6 +13,8 @@
 *.userosscache
 *.sln.docstates
 .local
+models/*.gguf
+**/models/*.gguf
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
