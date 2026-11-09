@@ -150,14 +150,14 @@ MassTransit создаёт exchange `Shared.Contracts.Telegram:TelegramMessageCr
 Контракты меняются только в `shared/Shared.Contracts`. Переименование типа или namespace ломает топологию RabbitMQ.
 Новые поля добавляются как nullable, ломающие изменения — через новую версию namespace.
 
-Сейчас реализованы консьюмеры `TelegramMessageCreated` и `GitPushCommitted`. Остальные контракты готовы, консьюмеров пока нет.
+Analytics подписан на все восемь конкретных событий из `Shared.Contracts`; подробности и ограничения описаны в [документации Analytics](src/AnalyticsService/README.md).
 
 ## Ограничения
 
 - GitHub webhooks не реализованы.
 - Нет БД, AI-анализа, дайджестов и SignalR.
 - Нет `secret_token` для Telegram webhook и HMAC для GitHub.
-- Нет retry/outbox/idempotency/DLQ, автотестов и CI.
+- В Analytics есть retry, error queues и дедупликация в памяти; transactional inbox/outbox и CI пока отсутствуют.
 
 ## Лицензии
 
