@@ -68,6 +68,8 @@ export default function App() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [digestRevisions, setDigestRevisions] = useState<Record<string, number>>({});
   const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const [isDevelopmentBrowser, setIsDevelopmentBrowser] = useState(false);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
 
   useEffect(() => {
     setSelectedChatId((current) => groups.some((g) => g.chatId === current) ? current : groups[0]?.chatId ?? null);
@@ -114,6 +116,20 @@ export default function App() {
   useEffect(() => {
     let connection: HubConnection | undefined;
     let disposed = false;
+    setSessionLoaded(false);
+
+    const loadSession = async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/auth/me`, { headers: authHeaders });
+        if (!response.ok) throw new Error("Could not load session");
+        const session: { isDevelopment: boolean } = await response.json();
+        if (!disposed) setIsDevelopmentBrowser(session.isDevelopment && !initData);
+      } catch {
+        if (!disposed) setIsDevelopmentBrowser(false);
+      } finally {
+        if (!disposed) setSessionLoaded(true);
+      }
+    };
 
     const start = async () => {
       telegram?.ready?.();
@@ -154,6 +170,7 @@ export default function App() {
       }
     };
 
+    void loadSession();
     void loadGroups();
     void start();
     void prepareGroupRequest();
@@ -162,7 +179,7 @@ export default function App() {
       disposed = true;
       if (connection?.state !== HubConnectionState.Disconnected) void connection?.stop();
     };
-  }, [initData, loadGroups, prepareGroupRequest]);
+  }, [initData, authHeaders, loadGroups, prepareGroupRequest]);
 
   // requestChat вызывается непосредственно из click handler: нативное окно открывает Telegram.
   const addGroup = () => {
@@ -206,13 +223,13 @@ export default function App() {
           }} disabled={loading}>
             Обновить
           </button>
-          <button onClick={addGroup} disabled={!canUseRequestChat || !preparedButtonId || preparingButton}>
+          {!isDevelopmentBrowser && <button onClick={addGroup} disabled={!canUseRequestChat || !preparedButtonId || preparingButton}>
             {preparingButton ? "Подготовка..." : "＋ Добавить группу"}
-          </button>
+          </button>}
         </div>
       </section>
 
-      {!canUseRequestChat && (
+      {sessionLoaded && !canUseRequestChat && !isDevelopmentBrowser && (
         <div className="hint">
           Откройте Mini App внутри Telegram на актуальной версии приложения, чтобы подключать группы.
         </div>
@@ -223,7 +240,9 @@ export default function App() {
       {loading ? (
         <div className="empty">Загрузка ваших групп...</div>
       ) : groups.length === 0 ? (
-        <div className="empty">У вас пока нет подключённых групп. Нажмите «Добавить группу».</div>
+        <div className="empty">{isDevelopmentBrowser
+          ? "Для этой учётной записи пока нет подключённых групп."
+          : "У вас пока нет подключённых групп. Нажмите «Добавить группу»."}</div>
       ) : (
         <section className="groups">
           {groups.map((group) => (

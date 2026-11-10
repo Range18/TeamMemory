@@ -7,7 +7,7 @@ namespace GroupDashboard.Api.Controllers;
 [Route("api/[controller]")]
 [ApiController]
 [Authorize]
-public sealed class AuthController : ControllerBase
+public sealed class AuthController(IWebHostEnvironment environment) : ControllerBase
 {
     // GET /api/auth/me — useful for checking which Telegram account is authenticated.
     [HttpGet("me")]
@@ -15,8 +15,8 @@ public sealed class AuthController : ControllerBase
     public ActionResult<CurrentMiniAppUserDto> GetCurrentUser()
     {
         var telegramId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        return Ok(new CurrentMiniAppUserDto(telegramId!));
+        return Ok(new CurrentMiniAppUserDto(telegramId!, environment.IsDevelopment()));
     }
 }
 
-public sealed record CurrentMiniAppUserDto(string TelegramId);
+public sealed record CurrentMiniAppUserDto(string TelegramId, bool IsDevelopment);
