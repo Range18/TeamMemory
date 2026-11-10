@@ -17,6 +17,7 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 
 builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 builder.Services.AddSingleton<TelegramInitDataValidator>();
+builder.Services.AddSingleton<GroupAccessPolicy>();
 builder.Services.AddSingleton<TelegramChatRequestService>();
 builder.Services.AddControllers();
 builder.Services.AddSignalR();

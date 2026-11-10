@@ -1,16 +1,19 @@
 using GroupDashboard.Api.Contracts;
+using GroupDashboard.Api.Auth;
 using GroupDashboard.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace GroupDashboard.Api.Services;
 
-public sealed class GroupDigestService(AppDbContext db, IOptions<DigestOptions> options, TimeProvider timeProvider)
+public sealed class GroupDigestService(AppDbContext db, IOptions<DigestOptions> options, TimeProvider timeProvider,
+    GroupAccessPolicy access)
 {
     public async Task<DigestDto?> Get(long chatId, long managerId, DateOnly? requestedDate, CancellationToken ct)
     {
+        var viewAll = access.CanViewAllGroups(managerId);
         var group = await db.Groups.AsNoTracking()
-            .Where(g => g.ChatId == chatId && g.Managers.Any(m => m.ManagerTelegramId == managerId))
+            .Where(g => g.ChatId == chatId && (viewAll || g.Managers.Any(m => m.ManagerTelegramId == managerId)))
             .Select(g => new { g.Title }).SingleOrDefaultAsync(ct);
         if (group is null) return null;
         var settings = options.Value;

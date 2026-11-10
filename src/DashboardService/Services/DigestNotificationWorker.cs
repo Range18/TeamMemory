@@ -1,4 +1,5 @@
 using System.Globalization;
+using GroupDashboard.Api.Auth;
 using GroupDashboard.Api.Contracts;
 using GroupDashboard.Api.Data;
 using GroupDashboard.Api.Hubs;
@@ -27,6 +28,7 @@ public sealed class DigestNotificationWorker(IServiceScopeFactory scopes, IHubCo
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var access = scope.ServiceProvider.GetRequiredService<GroupAccessPolicy>();
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
         // Competing workers skip claimed rows. A failed send rolls back, keeping the notification pending.
         var pending = await db.DigestNotifications.FromSqlRaw("""
@@ -42,7 +44,7 @@ public sealed class DigestNotificationWorker(IServiceScopeFactory scopes, IHubCo
             {
                 var notification = new DigestUpdatedMessage(group.Key.ToString(CultureInfo.InvariantCulture),
                     date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-                foreach (var manager in managers)
+                foreach (var manager in access.NotificationRecipients(managers))
                     // SignalR groups contain only authenticated active sessions of this manager.
                     await hub.Clients.Group(GroupsHub.ManagerGroup(manager)).SendAsync("DigestUpdated", notification, ct);
             }

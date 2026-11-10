@@ -1,4 +1,5 @@
 using GroupDashboard.Api.Contracts;
+using GroupDashboard.Api.Auth;
 using GroupDashboard.Api.Data;
 using GroupDashboard.Api.Entities;
 using GroupDashboard.Api.Hubs;
@@ -11,6 +12,7 @@ namespace GroupDashboard.Api.Messaging;
 public sealed class GroupUpdatesConsumer(
     AppDbContext db,
     IHubContext<GroupsHub> hub,
+    GroupAccessPolicy access,
     ILogger<GroupUpdatesConsumer> logger) : IConsumer<GroupUpdatedMessage>
 {
     public async Task Consume(ConsumeContext<GroupUpdatedMessage> context)
@@ -22,7 +24,7 @@ public sealed class GroupUpdatesConsumer(
         if (result is null)
             return;
 
-        foreach (var managerId in result.ManagerTelegramIds)
+        foreach (var managerId in access.NotificationRecipients(result.ManagerTelegramIds))
         {
             await hub.Clients.Group(GroupsHub.ManagerGroup(managerId))
                 .SendAsync("GroupUpdated", result.Group, context.CancellationToken);

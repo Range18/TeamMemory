@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using GroupDashboard.Api.Auth;
 using GroupDashboard.Api.Contracts;
 using GroupDashboard.Api.Data;
 using GroupDashboard.Api.Services;
@@ -16,28 +17,32 @@ public sealed class GroupsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly TelegramChatRequestService _telegramChatRequestService;
     private readonly ILogger<GroupsController> _logger;
+    private readonly GroupAccessPolicy _access;
 
     public GroupsController(
         AppDbContext db,
         TelegramChatRequestService telegramChatRequestService,
-        ILogger<GroupsController> logger)
+        ILogger<GroupsController> logger,
+        GroupAccessPolicy access)
     {
         _db = db;
         _telegramChatRequestService = telegramChatRequestService;
         _logger = logger;
+        _access = access;
     }
 
-    // GET /api/groups — return only groups linked to the current manager.
+    // The default Development account can inspect all registered groups.
     [HttpGet]
     [Produces("application/json")]
     [ProducesResponseType(typeof(IReadOnlyList<GroupDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<GroupDto>>> GetMyGroups(CancellationToken cancellationToken)
     {
         var managerTelegramId = GetManagerTelegramId();
+        var viewAll = _access.CanViewAllGroups(managerTelegramId);
 
         var groups = await _db.Groups
             .AsNoTracking()
-            .Where(group => group.Managers.Any(link => link.ManagerTelegramId == managerTelegramId))
+            .Where(group => viewAll || group.Managers.Any(link => link.ManagerTelegramId == managerTelegramId))
             .OrderBy(group => group.Title)
             .Select(group => new GroupDto(
                 group.ChatId.ToString(),
@@ -61,11 +66,12 @@ public sealed class GroupsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var managerTelegramId = GetManagerTelegramId();
+        var viewAll = _access.CanViewAllGroups(managerTelegramId);
 
         var group = await _db.Groups
             .AsNoTracking()
             .Where(item => item.ChatId == chatId)
-            .Where(item => item.Managers.Any(link => link.ManagerTelegramId == managerTelegramId))
+            .Where(item => viewAll || item.Managers.Any(link => link.ManagerTelegramId == managerTelegramId))
             .Select(item => new GroupDto(
                 item.ChatId.ToString(),
                 item.Title,

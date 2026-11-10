@@ -67,6 +67,7 @@ docker compose up -d ingestion
 ```
 
 Конфигурация предназначена для локальной разработки: используется Development-режим
-и существующий тестовый вход `MiniApp:DevelopmentManagerId`. Чтобы видеть данные в
-интерфейсе, группа должна быть зарегистрирована и связана с руководителем через
-`GroupUpdatedMessage`, как описано в [README Dashboard](../src/DashboardService/README.md).
+и тестовый вход `MiniApp:DevelopmentManagerId`. Пользователь `123456789` в Development
+видит все группы, уже зарегистрированные в Dashboard, без привязок к руководителю.
+Остальные пользователи и Production требуют обычной связи через `GroupUpdatedMessage` /
+`group_managers`, как описано в [README Dashboard](../src/DashboardService/README.md).
