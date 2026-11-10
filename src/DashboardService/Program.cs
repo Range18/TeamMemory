@@ -10,6 +10,7 @@ using DashboardService.Consumers;
 using Shared.Contracts.Analytics;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.Configure<MassTransitHostOptions>(options => options.WaitUntilStarted = true);
 
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is not configured.");

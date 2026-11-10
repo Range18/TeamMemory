@@ -3,7 +3,7 @@ services:
     image: postgres:17
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     environment:
       POSTGRES_DB: analytics
       POSTGRES_USER: teammemory
@@ -34,6 +34,116 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  database-init:
+    image: postgres:17
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: teammemory
+      PGPASSWORD: teammemory
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for database in analytics group_dashboard; do
+          if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$database'" | grep -qx 1; then
+            createdb --owner="$$PGUSER" "$$database"
+          fi
+        done
+
+  dashboard:
+    build:
+      context: .
+      target: dashboard
+    restart: unless-stopped
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=group_dashboard;Username=teammemory;Password=teammemory
+      RabbitMq__Host: rabbitmq
+      Telegram__BotToken: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      MiniApp__DevelopmentManagerId: ${MINIAPP_DEVELOPMENT_MANAGER_ID:-123456789}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  analytics:
+    build:
+      context: .
+      target: analytics
+    restart: unless-stopped
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+      dashboard:
+        condition: service_healthy
+    environment:
+      - DOTNET_ENVIRONMENT=Development
+      - ConnectionStrings__Analytics=Host=postgres;Port=5432;Database=analytics;Username=teammemory;Password=teammemory
+      - RabbitMq__Host=rabbitmq
+      - Llama__ModelPath=/models/model.gguf
+      - Llama__GpuLayerCount=0
+      - Readiness__FilePath=/tmp/analytics-ready
+      - "Analytics__ChatTeams__${ANALYTICS_CHAT_ID:-100}=${ANALYTICS_TEAM_ID:-team-demo}"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/analytics-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - type: bind
+        source: ${Llama__ModelPath:?Set Llama__ModelPath to the GGUF file in .env}
+        target: /models/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false
+
+  ingestion:
+    build:
+      context: .
+      target: ingestion
+    restart: unless-stopped
+    depends_on:
+      analytics:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5081:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      RabbitMq__Host: rabbitmq
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+        restart: true
+    ports:
+      - "127.0.0.1:5173:80"
 
 volumes:
   analytics-data:

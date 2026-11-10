@@ -11,6 +11,7 @@ using DotNetEnv;
 Env.NoClobber().TraversePath().Load(Path.Combine(AppContext.BaseDirectory, ".env"));
 
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.Configure<MassTransitHostOptions>(options => options.WaitUntilStarted = true);
 
 var rabbitMq = builder.Configuration.GetSection("RabbitMq");
 builder.Logging.ClearProviders();
@@ -64,4 +65,12 @@ builder.Services.AddHostedService<AnalysisWorker>();
 builder.Services.AddHostedService<OutboxPublisher>();
 
 var host = builder.Build();
+var readinessPath = builder.Configuration["Readiness:FilePath"];
+if (!string.IsNullOrWhiteSpace(readinessPath))
+{
+    File.Delete(readinessPath);
+    var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+    lifetime.ApplicationStarted.Register(() => File.WriteAllText(readinessPath, "ready"));
+    lifetime.ApplicationStopping.Register(() => File.Delete(readinessPath));
+}
 host.Run();
