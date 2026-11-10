@@ -2,7 +2,6 @@ namespace Shared.Contracts.Analytics;
 
 public abstract record TaskAnalyticsEvent : IntegrationEventBase
 {
-    public required string TeamId { get; init; }
     // Optional for compatibility with events published before group digests were added.
     public long? ChatId { get; init; }
     public required Guid TaskId { get; init; }

@@ -9,16 +9,15 @@ backend и frontend собираются внутри контейнеров.
 TELEGRAM_BOT_TOKEN=ваш_токен
 Llama__ModelPath=E:/FIIT/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
 WEBHOOK_BASE_URL=
-ANALYTICS_CHAT_ID=100
-ANALYTICS_TEAM_ID=team-demo
 MINIAPP_DEVELOPMENT_MANAGER_ID=123456789
 POSTGRES_PORT=5434
 COMPOSE_PARALLEL_LIMIT=1
 COMPOSE_BAKE=false
 ```
 
-Чат `100` используется для локальных HTTP-тестов. Для настоящей Telegram-группы задайте
-её ChatId (может быть отрицательным), идентификатор команды и Telegram ID руководителя.
+ChatId автоматически приходит от Ingestion в каждом сообщении. Analytics не требует
+ручной настройки чатов или идентификатора команды. `MINIAPP_DEVELOPMENT_MANAGER_ID`
+нужен только для локального входа в браузере без Telegram; настоящая Mini App использует initData.
 Существующие секреты в `.env` сохраняйте; файл не входит в Docker build context.
 Модель подключается только для чтения по пути `/models/model.gguf` внутри Analytics.
 Переменная `Llama__ModelPath` в `.env` при этом остаётся путём к файлу на вашем компьютере.

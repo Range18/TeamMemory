@@ -27,22 +27,19 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
 
     public async Task Accept(TelegramMessageCreated message, CancellationToken ct)
     {
-        if (message.EventId == Guid.Empty || message.SenderId is null or <= 0 || message.MessageId <= 0
+        if (message.EventId == Guid.Empty || message.ChatId == 0 || message.SenderId is null or <= 0 || message.MessageId <= 0
             || string.IsNullOrWhiteSpace(message.Text) || message.Text.Length > 32000
             || string.IsNullOrWhiteSpace(message.CorrelationId) || message.Source != "telegram"
             || string.IsNullOrWhiteSpace(message.SourceInstance) || message.OccurredAt == default)
             throw new ArgumentException("Invalid Telegram message; stable SenderId and nonempty text are required.");
-        if (!options.Value.ChatTeams.TryGetValue(message.ChatId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var team)
-            || string.IsNullOrWhiteSpace(team))
-            throw new ArgumentException("Chat is not bound to a team in Analytics:ChatTeams.");
         await using var connection = await dataSource.OpenConnectionAsync(ct);
         await Execute(connection, """
-            INSERT INTO inbox_events(event_id,source_instance,chat_id,message_id,thread_id,team_id,
+            INSERT INTO inbox_events(event_id,source_instance,chat_id,message_id,thread_id,
                 employee_id,author,text,occurred_at,correlation_id,payload)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
             ON CONFLICT DO NOTHING
             """, ct, message.EventId, message.SourceInstance, message.ChatId, message.MessageId,
-            message.ThreadId ?? 0, team, message.SenderId.Value, message.SenderUsername, message.Text,
+            message.ThreadId ?? 0, message.SenderId.Value, message.SenderUsername, message.Text,
             message.OccurredAt.ToUniversalTime(), message.CorrelationId,
             System.Text.Json.JsonSerializer.Serialize(message));
     }
@@ -51,29 +48,29 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
     {
         var settings = options.Value;
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        var groups = new List<(string Team, string Source, long Chat, long Thread)>();
+        var groups = new List<(string Source, long Chat, long Thread)>();
         await using (var command = Command(connection, """
-            SELECT team_id,source_instance,chat_id,thread_id FROM inbox_events WHERE batch_id IS NULL
-            GROUP BY team_id,source_instance,chat_id,thread_id
+            SELECT source_instance,chat_id,thread_id FROM inbox_events WHERE batch_id IS NULL
+            GROUP BY source_instance,chat_id,thread_id
             HAVING max(received_at) <= now() - make_interval(secs => $1)
                 OR min(received_at) <= now() - make_interval(secs => $2) OR count(*) >= $3
             ORDER BY min(received_at) LIMIT 20
             """, settings.IdleSeconds, settings.MaxWaitSeconds, settings.MaxMessages))
         await using (var reader = await command.ExecuteReaderAsync(ct))
             while (await reader.ReadAsync(ct))
-                groups.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3)));
+                groups.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2)));
         foreach (var group in groups)
         {
             var id = Guid.NewGuid();
             await Execute(connection, """
-                INSERT INTO analysis_batches(id,team_id,source_instance,chat_id,thread_id) VALUES($1,$2,$3,$4,$5)
-                """, ct, id, group.Team, group.Source, group.Chat, group.Thread);
+                INSERT INTO analysis_batches(id,source_instance,chat_id,thread_id) VALUES($1,$2,$3,$4)
+                """, ct, id, group.Source, group.Chat, group.Thread);
             await Execute(connection, """
                 UPDATE inbox_events SET batch_id=$1 WHERE event_id IN (
-                    SELECT event_id FROM inbox_events WHERE batch_id IS NULL AND team_id=$2
-                    AND source_instance=$3 AND chat_id=$4 AND thread_id=$5
-                    ORDER BY received_at,event_id LIMIT $6)
-                """, ct, id, group.Team, group.Source, group.Chat, group.Thread, settings.MaxMessages);
+                    SELECT event_id FROM inbox_events WHERE batch_id IS NULL
+                    AND source_instance=$2 AND chat_id=$3 AND thread_id=$4
+                    ORDER BY received_at,event_id LIMIT $5)
+                """, ct, id, group.Source, group.Chat, group.Thread, settings.MaxMessages);
         }
         await transaction.CommitAsync(ct);
     }
@@ -81,22 +78,21 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
     public async Task<PendingAnalysis?> NextBatch(NpgsqlConnection connection, CancellationToken ct)
     {
         Guid id;
-        string team;
         long chatId;
         string? savedInput, savedResult;
         int attempts;
         await using (var command = Command(connection, """
-            SELECT id,team_id,input::text,result::text,attempts,chat_id FROM analysis_batches
+            SELECT id,input::text,result::text,attempts,chat_id FROM analysis_batches
             WHERE status='ready' AND next_attempt_at <= now() ORDER BY created_at,id LIMIT 1
             """))
         await using (var reader = await command.ExecuteReaderAsync(ct))
         {
             if (!await reader.ReadAsync(ct)) return null;
-            id = reader.GetGuid(0); team = reader.GetString(1);
-            savedInput = reader.IsDBNull(2) ? null : reader.GetString(2);
-            savedResult = reader.IsDBNull(3) ? null : reader.GetString(3);
-            attempts = reader.GetInt32(4);
-            chatId = reader.GetInt64(5);
+            id = reader.GetGuid(0);
+            savedInput = reader.IsDBNull(1) ? null : reader.GetString(1);
+            savedResult = reader.IsDBNull(2) ? null : reader.GetString(2);
+            attempts = reader.GetInt32(3);
+            chatId = reader.GetInt64(4);
         }
         if (savedInput is not null)
             return new(AnalysisJson.Read<AnalysisInput>(savedInput) with { ChatId = chatId }, savedResult, attempts);
@@ -110,25 +106,25 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
             while (await reader.ReadAsync(ct))
                 messages.Add(new(reader.GetGuid(0), reader.GetInt64(1), reader.GetInt64(2),
                     reader.GetString(3), reader.GetString(4), reader.GetFieldValue<DateTimeOffset>(5)));
-        var tasks = await LoadTasks(connection, ct, team, messages.Select(m => m.EmployeeId).Distinct().ToArray());
+        var tasks = await LoadTasks(connection, ct, chatId, messages.Select(m => m.EmployeeId).Distinct().ToArray());
         // Never silently omit a possible task and then allow the model to invent a duplicate.
         if (tasks.Length > 20)
         {
             await FailBatch(connection, id, "needs_review", "More than 20 candidate tasks.", ct);
             return null;
         }
-        var input = new AnalysisInput(id, team, messages.ToArray(), tasks, chatId);
+        var input = new AnalysisInput(id, chatId, messages.ToArray(), tasks);
         await Execute(connection, "UPDATE analysis_batches SET input=$2::jsonb WHERE id=$1", ct, id, AnalysisJson.Write(input));
         return new(input, null, attempts);
     }
 
     public static async Task<TrackedTask[]> LoadTasks(NpgsqlConnection connection, CancellationToken ct,
-        string? team = null, long[]? employees = null)
+        long? chatId = null, long[]? employees = null)
     {
         var result = new List<TrackedTask>();
-        await using var command = Command(connection, team is null ? "SELECT state::text FROM tasks" :
-            "SELECT state::text FROM tasks WHERE team_id=$1 AND employee_id=ANY($2)",
-            team is null ? [] : [team, employees!]);
+        await using var command = Command(connection, chatId is null ? "SELECT state::text FROM tasks WHERE chat_id IS NOT NULL" :
+            "SELECT state::text FROM tasks WHERE chat_id=$1 AND employee_id=ANY($2)",
+            chatId is null ? [] : [chatId.Value, employees!]);
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct)) result.Add(AnalysisJson.Read<TrackedTask>(reader.GetString(0)));
         return result.ToArray();
@@ -155,8 +151,8 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
                     """, ct, task.Id, AnalysisJson.Write(task), task.Version, version);
             else
                 updated = await Execute(connection, """
-                    INSERT INTO tasks(id,team_id,employee_id,version,state) VALUES($1,$2,$3,$4,$5::jsonb)
-                    """, ct, task.Id, task.TeamId, task.EmployeeId, task.Version, AnalysisJson.Write(task));
+                    INSERT INTO tasks(id,chat_id,employee_id,version,state) VALUES($1,$2,$3,$4,$5::jsonb)
+                    """, ct, task.Id, task.ChatId, task.EmployeeId, task.Version, AnalysisJson.Write(task));
             if (updated != 1) throw new AnalysisValidationException("Task version changed since analysis.");
         }
         foreach (var change in result.Changes)
@@ -198,7 +194,7 @@ public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<Analyti
                 """, ct, Guid.NewGuid(), task.Id, $"risk-{task.Version}", AnalysisJson.Write(new { atRisk }), now);
             if (atRisk) await Enqueue(connection, new TaskAtRisk
             {
-                Source = "analytics", CorrelationId = task.Id.ToString(), TeamId = task.TeamId,
+                Source = "analytics", CorrelationId = task.Id.ToString(),
                 ChatId = task.ChatId,
                 TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
                 Description = description, EvidenceEventIds = []

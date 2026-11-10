@@ -4,7 +4,6 @@ public sealed class AnalyticsEventEntity
 {
     public Guid EventId { get; set; }
     public long? ChatId { get; set; }
-    public required string TeamId { get; set; }
     public Guid TaskId { get; set; }
     public long EmployeeId { get; set; }
     public required string Kind { get; set; }

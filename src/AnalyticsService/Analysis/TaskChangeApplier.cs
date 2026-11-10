@@ -9,7 +9,7 @@ public static class TaskChangeApplier
 {
     public static AppliedAnalysis Apply(AnalysisInput input, AnalysisResult result, double minimumConfidence)
     {
-        if (result.SchemaVersion != 1 || result.Changes is null || result.Ambiguities is null || result.Ambiguities.Length != 0)
+        if (input.ChatId == 0 || result.SchemaVersion != 1 || result.Changes is null || result.Ambiguities is null || result.Ambiguities.Length != 0)
             throw new AnalysisValidationException("Unsupported schema or ambiguous analysis.");
 
         // Work on copies: invalid operations cannot leave partially modified state.
@@ -37,7 +37,7 @@ public static class TaskChangeApplier
                     throw new AnalysisValidationException("Invalid new task or employee.");
                 task = new TrackedTask
                 {
-                    Id = Guid.NewGuid(), TeamId = input.TeamId, ChatId = input.ChatId, EmployeeId = employeeId,
+                    Id = Guid.NewGuid(), ChatId = input.ChatId, EmployeeId = employeeId,
                     Title = RequiredText(change.Title), StartedAt = effectiveAt, LastActivityAt = effectiveAt
                 };
                 newTasks.Add(change.NewTaskRef, task);
@@ -52,9 +52,8 @@ public static class TaskChangeApplier
                     ? tasks.GetValueOrDefault(id) ?? throw new AnalysisValidationException("Unknown task.")
                     : newTasks.GetValueOrDefault(change.NewTaskRef!) ?? throw new AnalysisValidationException("Unknown new task reference.");
                 var original = input.Tasks.SingleOrDefault(t => t.Id == task.Id);
-                task.ChatId ??= input.ChatId;
-                if (task.TeamId != input.TeamId || (original is not null && effectiveAt < original.LastActivityAt))
-                    throw new AnalysisValidationException("Task is outside team or evidence is older than current state.");
+                if (task.ChatId != input.ChatId || (original is not null && effectiveAt < original.LastActivityAt))
+                    throw new AnalysisValidationException("Task is outside chat or evidence is older than current state.");
                 switch (change.Action)
                 {
                     case "record_progress":
@@ -112,15 +111,13 @@ public static class TaskChangeApplier
         AnalysisChange change, string description, bool blocker) => blocker
         ? new BlockerDetected
         {
-            Source = "analytics", CorrelationId = input.BatchId.ToString(), TeamId = input.TeamId,
-            ChatId = task.ChatId ?? input.ChatId,
+            Source = "analytics", CorrelationId = input.BatchId.ToString(), ChatId = input.ChatId,
             TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
             Description = description, EvidenceEventIds = change.EvidenceEventIds
         }
         : new NewTaskReported
         {
-            Source = "analytics", CorrelationId = input.BatchId.ToString(), TeamId = input.TeamId,
-            ChatId = task.ChatId ?? input.ChatId,
+            Source = "analytics", CorrelationId = input.BatchId.ToString(), ChatId = input.ChatId,
             TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
             Description = description, EvidenceEventIds = change.EvidenceEventIds
         };

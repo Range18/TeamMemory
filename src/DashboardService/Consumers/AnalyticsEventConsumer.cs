@@ -10,7 +10,7 @@ public sealed class AnalyticsEventConsumer<T>(AnalyticsEventInbox inbox, ILogger
     public async Task Consume(ConsumeContext<T> context)
     {
         await inbox.Save(context.Message, context.CancellationToken);
-        logger.LogInformation("Received {EventType}, EventId: {EventId}, TeamId: {TeamId}, TaskId: {TaskId}",
-            typeof(T).Name, context.Message.EventId, context.Message.TeamId, context.Message.TaskId);
+        logger.LogInformation("Received {EventType}, EventId: {EventId}, ChatId: {ChatId}, TaskId: {TaskId}",
+            typeof(T).Name, context.Message.EventId, context.Message.ChatId, context.Message.TaskId);
     }
 }

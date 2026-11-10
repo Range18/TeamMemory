@@ -2,7 +2,6 @@
 CREATE TABLE IF NOT EXISTS analytics_events (
     event_id uuid PRIMARY KEY,
     chat_id bigint,
-    team_id text NOT NULL,
     task_id uuid NOT NULL,
     employee_id bigint NOT NULL,
     kind text NOT NULL,
@@ -12,6 +11,7 @@ CREATE TABLE IF NOT EXISTS analytics_events (
     occurred_at_utc timestamptz NOT NULL,
     received_at_utc timestamptz NOT NULL
 );
+ALTER TABLE analytics_events DROP COLUMN IF EXISTS team_id;
 CREATE INDEX IF NOT EXISTS ix_analytics_events_chat_date ON analytics_events(chat_id, occurred_at_utc);
 CREATE TABLE IF NOT EXISTS digest_notifications (
     event_id uuid PRIMARY KEY REFERENCES analytics_events(event_id) ON DELETE CASCADE,

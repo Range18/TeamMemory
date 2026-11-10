@@ -24,7 +24,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<DigestOptions>().BindConfiguration("Digest")
     .Validate(o => TimeZoneInfo.TryFindSystemTimeZoneById(o.TimeZone, out _), "Unknown digest time zone.")
     .Validate(o => DigestFormatter.IsValidTemplate(o.Template), "Digest template must contain all five placeholders.")
-    .Validate(o => o.NotificationPollSeconds is >= 1 and <= 60 && o.LegacyTeamChats.Values.All(id => id != 0),
+    .Validate(o => o.NotificationPollSeconds is >= 1 and <= 60,
         "Invalid digest notification settings.").ValidateOnStart();
 builder.Services.AddScoped<AnalyticsEventInbox>();
 builder.Services.AddScoped<GroupDigestService>();

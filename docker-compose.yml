@@ -95,7 +95,6 @@ services:
       - Llama__ModelPath=/models/model.gguf
       - Llama__GpuLayerCount=0
       - Readiness__FilePath=/tmp/analytics-ready
-      - "Analytics__ChatTeams__${ANALYTICS_CHAT_ID:-100}=${ANALYTICS_TEAM_ID:-team-demo}"
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/analytics-ready"]
       interval: 5s

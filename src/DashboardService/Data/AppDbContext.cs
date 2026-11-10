@@ -40,7 +40,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         analyticsEvent.HasKey(e => e.EventId);
         analyticsEvent.Property(e => e.EventId).HasColumnName("event_id");
         analyticsEvent.Property(e => e.ChatId).HasColumnName("chat_id");
-        analyticsEvent.Property(e => e.TeamId).HasColumnName("team_id");
         analyticsEvent.Property(e => e.TaskId).HasColumnName("task_id");
         analyticsEvent.Property(e => e.EmployeeId).HasColumnName("employee_id");
         analyticsEvent.Property(e => e.Kind).HasColumnName("kind");
