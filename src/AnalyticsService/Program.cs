@@ -6,6 +6,9 @@ using Shared.Contracts.Telegram;
 using AnalyticsService.Analysis;
 using AnalyticsService.Infrastructure.Persistence;
 using Npgsql;
+using DotNetEnv;
+
+Env.NoClobber().TraversePath().Load(Path.Combine(AppContext.BaseDirectory, ".env"));
 
 var builder = Host.CreateApplicationBuilder(args);
 

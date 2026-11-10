@@ -30,7 +30,7 @@ public sealed class AnalyticsOptions
 
 public sealed class LlamaOptions
 {
-    public string ModelPath { get; set; } = "models/qwen2.5-7b-instruct-q5_k_m.gguf";
+    public string ModelPath { get; set; } = "models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf";
     public uint ContextSize { get; set; } = 8192;
     public int GpuLayerCount { get; set; }
     public int MaxTokens { get; set; } = 1500;
