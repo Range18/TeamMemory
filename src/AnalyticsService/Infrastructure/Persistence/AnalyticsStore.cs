@@ -1,4 +1,7 @@
+using System.Text.Json;
 using AnalyticsService.Analysis;
+using AnalyticsService.Contracts;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Shared.Contracts.Analytics;
@@ -6,221 +9,224 @@ using Shared.Contracts.Telegram;
 
 namespace AnalyticsService.Infrastructure.Persistence;
 
-public sealed class AnalyticsStore(NpgsqlDataSource dataSource, IOptions<AnalyticsOptions> options)
+public sealed class AnalyticsStore(IDbContextFactory<AnalyticsDbContext> contextFactory, IOptions<AnalyticsOptions> options)
 {
-    // One active processor across replicas. A session lock is released by PostgreSQL on disconnect.
-    // Inbox ingestion uses other connections and stays independent of LLM latency.
-    public const long WorkerLock = 7421983101;
-    public const long PublisherLock = 7421983102;
-
     public async Task Initialize(CancellationToken ct)
     {
-        using var stream = typeof(AnalyticsStore).Assembly.GetManifestResourceStream(
-            "AnalyticsService.Infrastructure.Persistence.schema.sql")!;
-        using var reader = new StreamReader(stream);
-        await using var connection = await dataSource.OpenConnectionAsync(ct);
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-        await Execute(connection, "SELECT pg_advisory_xact_lock(7421983100)", ct);
-        await Execute(connection, await reader.ReadToEndAsync(ct), ct);
-        await transaction.CommitAsync(ct);
+        await using var db = await contextFactory.CreateDbContextAsync(ct);
+        await using var initializerLock = await DatabaseSessionLock.Acquire(db, DatabaseSessionLock.Initializer, ct);
+        // Existing tables keep their data and JSON format; a fresh database is created from the EF model.
+        await db.Database.EnsureCreatedAsync(ct);
     }
 
     public async Task Accept(TelegramMessageCreated message, CancellationToken ct)
     {
-        if (message.EventId == Guid.Empty || message.SenderId is null or <= 0 || message.MessageId <= 0
-            || string.IsNullOrWhiteSpace(message.Text) || message.Text.Length > 32000
-            || string.IsNullOrWhiteSpace(message.CorrelationId) || message.Source != "telegram"
-            || string.IsNullOrWhiteSpace(message.SourceInstance) || message.OccurredAt == default)
-            throw new ArgumentException("Invalid Telegram message; stable SenderId and nonempty text are required.");
-        if (!options.Value.ChatTeams.TryGetValue(message.ChatId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var team)
-            || string.IsNullOrWhiteSpace(team))
-            throw new ArgumentException("Chat is not bound to a team in Analytics:ChatTeams.");
-        await using var connection = await dataSource.OpenConnectionAsync(ct);
-        await Execute(connection, """
-            INSERT INTO inbox_events(event_id,source_instance,chat_id,message_id,thread_id,team_id,
-                employee_id,author,text,occurred_at,correlation_id,payload)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
-            ON CONFLICT DO NOTHING
-            """, ct, message.EventId, message.SourceInstance, message.ChatId, message.MessageId,
-            message.ThreadId ?? 0, team, message.SenderId.Value, message.SenderUsername, message.Text,
-            message.OccurredAt.ToUniversalTime(), message.CorrelationId,
-            System.Text.Json.JsonSerializer.Serialize(message));
+        var chatId = message.ChatId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        options.Value.ChatTeams.TryGetValue(chatId, out var teamId);
+        var dto = TelegramMessageDto.FromEvent(message, teamId);
+        dto.Validate();
+
+        await using var db = await contextFactory.CreateDbContextAsync(ct);
+        db.InboxEvents.Add(new InboxEvent
+        {
+            EventId = dto.EventId,
+            SourceInstance = dto.SourceInstance,
+            ChatId = dto.ChatId,
+            MessageId = dto.MessageId,
+            ThreadId = dto.ThreadId,
+            TeamId = dto.TeamId!,
+            EmployeeId = dto.SenderId!.Value,
+            Author = dto.SenderUsername,
+            Text = dto.Text,
+            OccurredAt = dto.OccurredAt,
+            CorrelationId = dto.CorrelationId,
+            Payload = JsonSerializer.Serialize(message)
+        });
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        { SqlState: PostgresErrorCodes.UniqueViolation, TableName: "inbox_events" })
+        {
+            // Both EventId and the source/chat/message identity are unique, including concurrent deliveries.
+        }
     }
 
-    public async Task BuildBatches(NpgsqlConnection connection, CancellationToken ct)
+    public async Task BuildBatches(AnalyticsDbContext db, CancellationToken ct)
     {
         var settings = options.Value;
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-        var groups = new List<(string Team, string Source, long Chat, long Thread)>();
-        await using (var command = Command(connection, """
-            SELECT team_id,source_instance,chat_id,thread_id FROM inbox_events WHERE batch_id IS NULL
-            GROUP BY team_id,source_instance,chat_id,thread_id
-            HAVING max(received_at) <= now() - make_interval(secs => $1)
-                OR min(received_at) <= now() - make_interval(secs => $2) OR count(*) >= $3
-            ORDER BY min(received_at) LIMIT 20
-            """, settings.IdleSeconds, settings.MaxWaitSeconds, settings.MaxMessages))
-        await using (var reader = await command.ExecuteReaderAsync(ct))
-            while (await reader.ReadAsync(ct))
-                groups.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3)));
+        var now = DateTimeOffset.UtcNow;
+        var idleBefore = now.AddSeconds(-settings.IdleSeconds);
+        var waitingBefore = now.AddSeconds(-settings.MaxWaitSeconds);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var groups = await db.InboxEvents.Where(e => e.BatchId == null)
+            .GroupBy(e => new { e.TeamId, e.SourceInstance, e.ChatId, e.ThreadId })
+            .Where(g => g.Max(e => e.ReceivedAt) <= idleBefore
+                || g.Min(e => e.ReceivedAt) <= waitingBefore || g.Count() >= settings.MaxMessages)
+            .OrderBy(g => g.Min(e => e.ReceivedAt))
+            .Select(g => g.Key).Take(20).ToListAsync(ct);
+
         foreach (var group in groups)
         {
-            var id = Guid.NewGuid();
-            await Execute(connection, """
-                INSERT INTO analysis_batches(id,team_id,source_instance,chat_id,thread_id) VALUES($1,$2,$3,$4,$5)
-                """, ct, id, group.Team, group.Source, group.Chat, group.Thread);
-            await Execute(connection, """
-                UPDATE inbox_events SET batch_id=$1 WHERE event_id IN (
-                    SELECT event_id FROM inbox_events WHERE batch_id IS NULL AND team_id=$2
-                    AND source_instance=$3 AND chat_id=$4 AND thread_id=$5
-                    ORDER BY received_at,event_id LIMIT $6)
-                """, ct, id, group.Team, group.Source, group.Chat, group.Thread, settings.MaxMessages);
+            var batch = new AnalysisBatch
+            {
+                TeamId = group.TeamId,
+                SourceInstance = group.SourceInstance,
+                ChatId = group.ChatId,
+                ThreadId = group.ThreadId
+            };
+            var messages = await db.InboxEvents.Where(e => e.BatchId == null && e.TeamId == group.TeamId
+                    && e.SourceInstance == group.SourceInstance && e.ChatId == group.ChatId && e.ThreadId == group.ThreadId)
+                .OrderBy(e => e.ReceivedAt).ThenBy(e => e.EventId).Take(settings.MaxMessages).ToListAsync(ct);
+            db.AnalysisBatches.Add(batch);
+            foreach (var message in messages) message.BatchId = batch.Id;
         }
+        await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
+        db.ChangeTracker.Clear();
     }
 
-    public async Task<PendingAnalysis?> NextBatch(NpgsqlConnection connection, CancellationToken ct)
-    {
-        Guid id;
-        string team;
-        string? savedInput, savedResult;
-        int attempts;
-        await using (var command = Command(connection, """
-            SELECT id,team_id,input::text,result::text,attempts FROM analysis_batches
-            WHERE status='ready' AND next_attempt_at <= now() ORDER BY created_at,id LIMIT 1
-            """))
-        await using (var reader = await command.ExecuteReaderAsync(ct))
-        {
-            if (!await reader.ReadAsync(ct)) return null;
-            id = reader.GetGuid(0); team = reader.GetString(1);
-            savedInput = reader.IsDBNull(2) ? null : reader.GetString(2);
-            savedResult = reader.IsDBNull(3) ? null : reader.GetString(3);
-            attempts = reader.GetInt32(4);
-        }
-        if (savedInput is not null)
-            return new(AnalysisJson.Read<AnalysisInput>(savedInput), savedResult, attempts);
-
-        var messages = new List<AnalysisMessage>();
-        await using (var command = Command(connection, """
-            SELECT event_id,message_id,employee_id,author,text,occurred_at FROM inbox_events
-            WHERE batch_id=$1 ORDER BY occurred_at,event_id
-            """, id))
-        await using (var reader = await command.ExecuteReaderAsync(ct))
-            while (await reader.ReadAsync(ct))
-                messages.Add(new(reader.GetGuid(0), reader.GetInt64(1), reader.GetInt64(2),
-                    reader.GetString(3), reader.GetString(4), reader.GetFieldValue<DateTimeOffset>(5)));
-        var tasks = await LoadTasks(connection, ct, team, messages.Select(m => m.EmployeeId).Distinct().ToArray());
-        // Never silently omit a possible task and then allow the model to invent a duplicate.
-        if (tasks.Length > 20)
-        {
-            await FailBatch(connection, id, "needs_review", "More than 20 candidate tasks.", ct);
-            return null;
-        }
-        var input = new AnalysisInput(id, team, messages.ToArray(), tasks);
-        await Execute(connection, "UPDATE analysis_batches SET input=$2::jsonb WHERE id=$1", ct, id, AnalysisJson.Write(input));
-        return new(input, null, attempts);
-    }
-
-    public static async Task<TrackedTask[]> LoadTasks(NpgsqlConnection connection, CancellationToken ct,
-        string? team = null, long[]? employees = null)
-    {
-        var result = new List<TrackedTask>();
-        await using var command = Command(connection, team is null ? "SELECT state::text FROM tasks" :
-            "SELECT state::text FROM tasks WHERE team_id=$1 AND employee_id=ANY($2)",
-            team is null ? [] : [team, employees!]);
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct)) result.Add(AnalysisJson.Read<TrackedTask>(reader.GetString(0)));
-        return result.ToArray();
-    }
-
-    public static Task<int> BeginAttempt(NpgsqlConnection connection, Guid id, CancellationToken ct) =>
-        Execute(connection, "UPDATE analysis_batches SET attempts=attempts+1 WHERE id=$1", ct, id);
-
-    public static Task<int> SaveResult(NpgsqlConnection connection, Guid id, AnalysisResult result, CancellationToken ct) =>
-        Execute(connection, "UPDATE analysis_batches SET result=$2::jsonb WHERE id=$1", ct, id, AnalysisJson.Write(result));
-
-    public static async Task Apply(NpgsqlConnection connection, AnalysisInput input, AppliedAnalysis result, CancellationToken ct)
-    {
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-        await using (var check = Command(connection, "SELECT status FROM analysis_batches WHERE id=$1 FOR UPDATE", input.BatchId))
-            if ((string?)await check.ExecuteScalarAsync(ct) != "ready") return;
-        foreach (var task in result.Tasks)
-        {
-            var expected = input.Tasks.SingleOrDefault(t => t.Id == task.Id)?.Version;
-            int updated;
-            if (expected is { } version)
-                updated = await Execute(connection, """
-                    UPDATE tasks SET state=$2::jsonb,version=$3 WHERE id=$1 AND version=$4
-                    """, ct, task.Id, AnalysisJson.Write(task), task.Version, version);
-            else
-                updated = await Execute(connection, """
-                    INSERT INTO tasks(id,team_id,employee_id,version,state) VALUES($1,$2,$3,$4,$5::jsonb)
-                    """, ct, task.Id, task.TeamId, task.EmployeeId, task.Version, AnalysisJson.Write(task));
-            if (updated != 1) throw new AnalysisValidationException("Task version changed since analysis.");
-        }
-        foreach (var change in result.Changes)
-            await Execute(connection, """
-                INSERT INTO task_changes(id,task_id,batch_id,change_ref,action,payload,effective_at)
-                VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)
-                """, ct, Guid.NewGuid(), change.Task.Id, input.BatchId, change.Change.ChangeRef,
-                change.Change.Action, AnalysisJson.Write(change.Change), change.EffectiveAt.ToUniversalTime());
-        foreach (var message in result.Events) await Enqueue(connection, message, ct);
-        await Execute(connection, "UPDATE analysis_batches SET status='applied',error=NULL WHERE id=$1", ct, input.BatchId);
-        await transaction.CommitAsync(ct);
-    }
-
-    public static Task<int> FailBatch(NpgsqlConnection connection, Guid id, string status, string error, CancellationToken ct) =>
-        Execute(connection, "UPDATE analysis_batches SET status=$2,error=$3 WHERE id=$1", ct, id, status, error);
-
-    public static Task<int> RetryBatch(NpgsqlConnection connection, Guid id, int attempt, CancellationToken ct) =>
-        Execute(connection, """
-            UPDATE analysis_batches SET next_attempt_at=now()+make_interval(secs => $2),error='Analysis attempt failed'
-            WHERE id=$1
-            """, ct, id, Math.Min(300, (int)Math.Pow(2, attempt) * 5));
-
-    public async Task RecalculateRisks(NpgsqlConnection connection, CancellationToken ct)
+    public async Task<PendingAnalysis?> NextBatch(AnalyticsDbContext db, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
-        await using var transaction = await connection.BeginTransactionAsync(ct);
-        foreach (var task in await LoadTasks(connection, ct))
+        var batch = await db.AnalysisBatches.AsNoTracking()
+            .Where(b => b.Status == "ready" && b.NextAttemptAt <= now)
+            .OrderBy(b => b.CreatedAt).ThenBy(b => b.Id).FirstOrDefaultAsync(ct);
+        if (batch is null) return null;
+        if (batch.Input is not null)
+            return new(AnalysisJson.Read<AnalysisInput>(batch.Input), batch.Result, batch.Attempts);
+
+        var messages = await db.InboxEvents.AsNoTracking().Where(e => e.BatchId == batch.Id)
+            .OrderBy(e => e.OccurredAt).ThenBy(e => e.EventId)
+            .Select(e => new AnalysisMessage(e.EventId, e.MessageId, e.EmployeeId, e.Author, e.Text, e.OccurredAt))
+            .ToArrayAsync(ct);
+        var employees = messages.Select(m => m.EmployeeId).Distinct().ToArray();
+        var states = await db.Tasks.Where(t => t.TeamId == batch.TeamId && employees.Contains(t.EmployeeId))
+            .Select(t => t.State).ToArrayAsync(ct);
+        if (states.Length > 20)
         {
+            await FailBatch(db, batch.Id, "needs_review", "More than 20 candidate tasks.", ct);
+            return null;
+        }
+        var input = new AnalysisInput(batch.Id, batch.TeamId, messages,
+            states.Select(AnalysisJson.Read<TrackedTask>).ToArray());
+        var json = AnalysisJson.Write(input);
+        await db.AnalysisBatches.Where(b => b.Id == batch.Id)
+            .ExecuteUpdateAsync(update => update.SetProperty(b => b.Input, json), ct);
+        return new(input, null, batch.Attempts);
+    }
+
+    public static Task<int> BeginAttempt(AnalyticsDbContext db, Guid id, CancellationToken ct) =>
+        db.AnalysisBatches.Where(b => b.Id == id)
+            .ExecuteUpdateAsync(update => update.SetProperty(b => b.Attempts, b => b.Attempts + 1), ct);
+
+    public static Task<int> SaveResult(AnalyticsDbContext db, Guid id, AnalysisResult result, CancellationToken ct)
+    {
+        var json = AnalysisJson.Write(result);
+        return db.AnalysisBatches.Where(b => b.Id == id)
+            .ExecuteUpdateAsync(update => update.SetProperty(b => b.Result, json), ct);
+    }
+
+    public static async Task Apply(AnalyticsDbContext db, AnalysisInput input, AppliedAnalysis result, CancellationToken ct)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var batch = await db.AnalysisBatches.SingleAsync(b => b.Id == input.BatchId, ct);
+        if (batch.Status != "ready") return;
+
+        foreach (var task in result.Tasks)
+        {
+            var entity = new TaskEntity
+            {
+                Id = task.Id,
+                TeamId = task.TeamId,
+                EmployeeId = task.EmployeeId,
+                Version = task.Version,
+                State = AnalysisJson.Write(task)
+            };
+            if (input.Tasks.SingleOrDefault(t => t.Id == task.Id) is { } original)
+            {
+                var entry = db.Tasks.Attach(entity);
+                entry.Property(t => t.State).IsModified = true;
+                entry.Property(t => t.Version).IsModified = true;
+                entry.Property(t => t.Version).OriginalValue = original.Version;
+            }
+            else db.Tasks.Add(entity);
+        }
+        db.TaskChanges.AddRange(result.Changes.Select(change => new TaskChange
+        {
+            TaskId = change.Task.Id,
+            BatchId = input.BatchId,
+            ChangeRef = change.Change.ChangeRef,
+            Action = change.Change.Action,
+            Payload = AnalysisJson.Write(change.Change),
+            EffectiveAt = change.EffectiveAt.ToUniversalTime()
+        }));
+        foreach (var message in result.Events) Enqueue(db, message);
+        batch.Status = "applied";
+        batch.Error = null;
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new AnalysisValidationException("Task version or batch status changed since analysis.");
+        }
+        await transaction.CommitAsync(ct);
+        db.ChangeTracker.Clear();
+    }
+
+    public static Task<int> FailBatch(AnalyticsDbContext db, Guid id, string status, string error, CancellationToken ct) =>
+        db.AnalysisBatches.Where(b => b.Id == id)
+            .ExecuteUpdateAsync(update => update.SetProperty(b => b.Status, status).SetProperty(b => b.Error, error), ct);
+
+    public static Task<int> RetryBatch(AnalyticsDbContext db, Guid id, int attempt, CancellationToken ct)
+    {
+        var nextAttempt = DateTimeOffset.UtcNow.AddSeconds(Math.Min(300, (int)Math.Pow(2, attempt) * 5));
+        return db.AnalysisBatches.Where(b => b.Id == id).ExecuteUpdateAsync(update => update
+            .SetProperty(b => b.NextAttemptAt, nextAttempt).SetProperty(b => b.Error, "Analysis attempt failed"), ct);
+    }
+
+    public async Task RecalculateRisks(AnalyticsDbContext db, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        foreach (var entity in await db.Tasks.ToListAsync(ct))
+        {
+            var task = AnalysisJson.Read<TrackedTask>(entity.State);
             var atRisk = TaskChangeApplier.IsAtRisk(task, now, options.Value.RiskMultiplier);
             if (atRisk == task.AtRisk) continue;
             task.AtRisk = atRisk;
             task.Version++;
-            await Execute(connection, "UPDATE tasks SET state=$2::jsonb,version=$3 WHERE id=$1", ct,
-                task.Id, AnalysisJson.Write(task), task.Version);
-            var description = $"Calendar duration exceeds estimate × {options.Value.RiskMultiplier}.";
-            await Execute(connection, """
-                INSERT INTO task_changes(id,task_id,change_ref,action,payload,effective_at)
-                VALUES($1,$2,$3,'set_risk',$4::jsonb,$5)
-                """, ct, Guid.NewGuid(), task.Id, $"risk-{task.Version}", AnalysisJson.Write(new { atRisk }), now);
-            if (atRisk) await Enqueue(connection, new TaskAtRisk
+            entity.State = AnalysisJson.Write(task);
+            entity.Version = task.Version;
+            db.TaskChanges.Add(new TaskChange
             {
-                Source = "analytics", CorrelationId = task.Id.ToString(), TeamId = task.TeamId,
-                TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
-                Description = description, EvidenceEventIds = []
-            }, ct);
+                TaskId = task.Id,
+                ChangeRef = $"risk-{task.Version}",
+                Action = "set_risk",
+                Payload = AnalysisJson.Write(new { atRisk }),
+                EffectiveAt = now
+            });
+            if (atRisk) Enqueue(db, new TaskAtRisk
+            {
+                Source = "analytics",
+                CorrelationId = task.Id.ToString(),
+                TeamId = task.TeamId,
+                TaskId = task.Id,
+                Title = task.Title,
+                EmployeeId = task.EmployeeId,
+                Description = $"Calendar duration exceeds estimate × {options.Value.RiskMultiplier}.",
+                EvidenceEventIds = []
+            });
         }
+        await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
+        db.ChangeTracker.Clear();
     }
 
-    private static Task<int> Enqueue(NpgsqlConnection connection, TaskAnalyticsEvent message, CancellationToken ct) =>
-        Execute(connection, "INSERT INTO outbox_messages(event_id,event_type,payload) VALUES($1,$2,$3::jsonb)", ct,
-            message.EventId, message.GetType().Name,
-            System.Text.Json.JsonSerializer.Serialize(message, message.GetType()));
-
-    public static NpgsqlCommand Command(NpgsqlConnection connection, string sql, params object[] parameters)
-    {
-        var command = new NpgsqlCommand(sql, connection);
-        foreach (var parameter in parameters) command.Parameters.Add(new NpgsqlParameter { Value = parameter });
-        return command;
-    }
-
-    public static async Task<int> Execute(NpgsqlConnection connection, string sql, CancellationToken ct, params object[] parameters)
-    {
-        await using var command = Command(connection, sql, parameters);
-        return await command.ExecuteNonQueryAsync(ct);
-    }
+    private static void Enqueue(AnalyticsDbContext db, TaskAnalyticsEvent message) =>
+        db.OutboxMessages.Add(new OutboxMessage
+        {
+            EventId = message.EventId,
+            EventType = message.GetType().Name,
+            Payload = JsonSerializer.Serialize(message, message.GetType())
+        });
 }
 
 public sealed record PendingAnalysis(AnalysisInput Input, string? Result, int Attempts);

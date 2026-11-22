@@ -1,12 +1,12 @@
 using System.Text.Json;
 using AnalyticsService.Infrastructure.Persistence;
 using MassTransit;
-using Npgsql;
+using Microsoft.EntityFrameworkCore;
 using Shared.Contracts.Analytics;
 
 namespace AnalyticsService.Processing;
 
-public sealed class OutboxPublisher(NpgsqlDataSource dataSource, IBus bus, ILogger<OutboxPublisher> logger) : BackgroundService
+public sealed class OutboxPublisher(IDbContextFactory<AnalyticsDbContext> contextFactory, IBus bus, ILogger<OutboxPublisher> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -14,9 +14,9 @@ public sealed class OutboxPublisher(NpgsqlDataSource dataSource, IBus bus, ILogg
         {
             try
             {
-                await using var connection = await dataSource.OpenConnectionAsync(stoppingToken);
-                await using var publisherLock = await DatabaseSessionLock.TryAcquire(connection, AnalyticsStore.PublisherLock, stoppingToken);
-                if (publisherLock is not null) await PublishPending(connection, stoppingToken);
+                await using var db = await contextFactory.CreateDbContextAsync(stoppingToken);
+                await using var publisherLock = await DatabaseSessionLock.TryAcquire(db, DatabaseSessionLock.Publisher, stoppingToken);
+                if (publisherLock is not null) await PublishPending(db, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception exception)
@@ -28,18 +28,13 @@ public sealed class OutboxPublisher(NpgsqlDataSource dataSource, IBus bus, ILogg
         }
     }
 
-    private async Task PublishPending(NpgsqlConnection connection, CancellationToken ct)
+    private async Task PublishPending(AnalyticsDbContext db, CancellationToken ct)
     {
-        var pending = new List<(Guid Id, string Type, string Payload)>();
-        await using (var command = AnalyticsStore.Command(connection, """
-            SELECT event_id,event_type,payload::text FROM outbox_messages
-            WHERE published_at IS NULL ORDER BY created_at,event_id LIMIT 100
-            """))
-        await using (var reader = await command.ExecuteReaderAsync(ct))
-            while (await reader.ReadAsync(ct)) pending.Add((reader.GetGuid(0), reader.GetString(1), reader.GetString(2)));
+        var pending = await db.OutboxMessages.AsNoTracking().Where(e => e.PublishedAt == null)
+            .OrderBy(e => e.CreatedAt).ThenBy(e => e.EventId).Take(100).ToListAsync(ct);
         foreach (var item in pending)
         {
-            var type = item.Type switch
+            var type = item.EventType switch
             {
                 nameof(NewTaskReported) => typeof(NewTaskReported),
                 nameof(BlockerDetected) => typeof(BlockerDetected),
@@ -47,10 +42,11 @@ public sealed class OutboxPublisher(NpgsqlDataSource dataSource, IBus bus, ILogg
                 _ => throw new InvalidOperationException("Unknown analytics event type.")
             };
             var message = (TaskAnalyticsEvent)JsonSerializer.Deserialize(item.Payload, type)!;
-            await bus.Publish(message, type, context => context.MessageId = item.Id, ct);
+            await bus.Publish(message, type, context => context.MessageId = item.EventId, ct);
             // Crash here may redeliver the same EventId. Subscribers must deduplicate by EventId.
-            await AnalyticsStore.Execute(connection,
-                "UPDATE outbox_messages SET published_at=now() WHERE event_id=$1", ct, item.Id);
+            var publishedAt = DateTimeOffset.UtcNow;
+            await db.OutboxMessages.Where(e => e.EventId == item.EventId)
+                .ExecuteUpdateAsync(update => update.SetProperty(e => e.PublishedAt, publishedAt), ct);
         }
     }
 }

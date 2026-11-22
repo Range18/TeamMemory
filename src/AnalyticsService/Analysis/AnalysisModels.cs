@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -16,25 +17,61 @@ public static class AnalysisJson
         ?? throw new JsonException("Expected a JSON object.");
 }
 
-public sealed class AnalyticsOptions
+public sealed class AnalyticsOptions : IValidatableObject
 {
     public Dictionary<string, string> ChatTeams { get; set; } = [];
+
+    [Range(1, int.MaxValue)]
     public int IdleSeconds { get; set; } = 60;
+
+    [Range(1, int.MaxValue)]
     public int MaxWaitSeconds { get; set; } = 300;
+
+    [Range(1, 100)]
     public int MaxMessages { get; set; } = 100;
+
+    [Range(1, 10)]
     public int PollSeconds { get; set; } = 5;
+
+    [Range(1, int.MaxValue)]
     public int MaxAttempts { get; set; } = 5;
+
+    [Range(0d, 1d)]
     public double MinimumConfidence { get; set; } = .85;
+
+    [Range(double.Epsilon, double.MaxValue)]
     public double RiskMultiplier { get; set; } = 1.5;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (MaxWaitSeconds < IdleSeconds)
+            yield return new ValidationResult("MaxWaitSeconds must be at least IdleSeconds.",
+                [nameof(MaxWaitSeconds), nameof(IdleSeconds)]);
+    }
 }
 
-public sealed class LlamaOptions
+public sealed class LlamaOptions : IValidatableObject
 {
+    [Required]
     public string ModelPath { get; set; } = "models/qwen2.5-7b-instruct-q5_k_m.gguf";
+
+    [Range(typeof(uint), "1024", "4294967295")]
     public uint ContextSize { get; set; } = 8192;
+
     public int GpuLayerCount { get; set; }
+
+    [Range(1, int.MaxValue)]
     public int MaxTokens { get; set; } = 1500;
+
+    [Range(1, int.MaxValue)]
     public int TimeoutSeconds { get; set; } = 300;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (MaxTokens >= ContextSize)
+            yield return new ValidationResult("MaxTokens must be smaller than ContextSize.",
+                [nameof(MaxTokens), nameof(ContextSize)]);
+    }
 }
 
 public sealed record AnalysisMessage(Guid EventId, long MessageId, long EmployeeId,

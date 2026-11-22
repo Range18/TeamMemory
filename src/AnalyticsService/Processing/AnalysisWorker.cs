@@ -1,8 +1,8 @@
 using System.Text.Json;
 using AnalyticsService.Analysis;
 using AnalyticsService.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using Npgsql;
 
 namespace AnalyticsService.Processing;
 
@@ -12,7 +12,7 @@ public sealed class AnalyticsDatabaseInitializer(AnalyticsStore store) : IHosted
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
-public sealed class AnalysisWorker(NpgsqlDataSource dataSource, AnalyticsStore store,
+public sealed class AnalysisWorker(IDbContextFactory<AnalyticsDbContext> contextFactory, AnalyticsStore store,
     IMessageBatchAnalyzer analyzer, IOptions<AnalyticsOptions> options, ILogger<AnalysisWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -21,14 +21,14 @@ public sealed class AnalysisWorker(NpgsqlDataSource dataSource, AnalyticsStore s
         {
             try
             {
-                await using var connection = await dataSource.OpenConnectionAsync(stoppingToken);
-                await using var workerLock = await DatabaseSessionLock.TryAcquire(connection, AnalyticsStore.WorkerLock, stoppingToken);
+                await using var db = await contextFactory.CreateDbContextAsync(stoppingToken);
+                await using var workerLock = await DatabaseSessionLock.TryAcquire(db, DatabaseSessionLock.Worker, stoppingToken);
                 if (workerLock is not null)
                 {
-                    await store.RecalculateRisks(connection, stoppingToken);
-                    await store.BuildBatches(connection, stoppingToken);
-                    var batch = await store.NextBatch(connection, stoppingToken);
-                    if (batch is not null) await Process(connection, batch, stoppingToken);
+                    await store.RecalculateRisks(db, stoppingToken);
+                    await store.BuildBatches(db, stoppingToken);
+                    var batch = await store.NextBatch(db, stoppingToken);
+                    if (batch is not null) await Process(db, batch, stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -41,55 +41,42 @@ public sealed class AnalysisWorker(NpgsqlDataSource dataSource, AnalyticsStore s
         }
     }
 
-    private async Task Process(NpgsqlConnection connection, PendingAnalysis batch, CancellationToken ct)
+    private async Task Process(AnalyticsDbContext db, PendingAnalysis batch, CancellationToken ct)
     {
         var id = batch.Input.BatchId;
         try
         {
             if (batch.Result is null && batch.Attempts >= options.Value.MaxAttempts)
             {
-                await AnalyticsStore.FailBatch(connection, id, "failed", "Maximum attempts reached.", ct);
+                await AnalyticsStore.FailBatch(db, id, "failed", "Maximum attempts reached.", ct);
                 return;
             }
             AnalysisResult result;
             if (batch.Result is not null) result = AnalysisJson.Read<AnalysisResult>(batch.Result);
             else
             {
-                await AnalyticsStore.BeginAttempt(connection, id, ct);
+                await AnalyticsStore.BeginAttempt(db, id, ct);
                 result = await analyzer.Analyze(batch.Input, ct);
-                await AnalyticsStore.SaveResult(connection, id, result, ct);
+                await AnalyticsStore.SaveResult(db, id, result, ct);
             }
             var applied = TaskChangeApplier.Apply(batch.Input, result, options.Value.MinimumConfidence);
-            await AnalyticsStore.Apply(connection, batch.Input, applied, ct);
+            await AnalyticsStore.Apply(db, batch.Input, applied, ct);
             logger.LogInformation("Applied batch {BatchId}, changes: {ChangeCount}", id, applied.Changes.Length);
         }
         catch (Exception exception) when (exception is AnalysisValidationException or JsonException)
         {
-            await AnalyticsStore.FailBatch(connection, id, "needs_review", "Invalid or ambiguous model result.", ct);
+            db.ChangeTracker.Clear();
+            await AnalyticsStore.FailBatch(db, id, "needs_review", "Invalid or ambiguous model result.", ct);
             logger.LogWarning("Batch {BatchId} requires review", id);
         }
         catch (Exception exception) when (!ct.IsCancellationRequested)
         {
+            db.ChangeTracker.Clear();
             if (batch.Attempts + 1 >= options.Value.MaxAttempts)
-                await AnalyticsStore.FailBatch(connection, id, "failed", "Maximum attempts reached.", ct);
+                await AnalyticsStore.FailBatch(db, id, "failed", "Maximum attempts reached.", ct);
             else
-                await AnalyticsStore.RetryBatch(connection, id, batch.Attempts + 1, ct);
+                await AnalyticsStore.RetryBatch(db, id, batch.Attempts + 1, ct);
             logger.LogWarning("Batch {BatchId} attempt failed: {ErrorType}", id, exception.GetType().Name);
         }
-    }
-}
-
-public sealed class DatabaseSessionLock(NpgsqlConnection connection, long key) : IAsyncDisposable
-{
-    public static async Task<DatabaseSessionLock?> TryAcquire(NpgsqlConnection connection, long key, CancellationToken ct)
-    {
-        await using var command = AnalyticsStore.Command(connection, "SELECT pg_try_advisory_lock($1)", key);
-        return (bool)(await command.ExecuteScalarAsync(ct))! ? new(connection, key) : null;
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (connection.State != System.Data.ConnectionState.Open) return;
-        await AnalyticsStore.Execute(connection, "SELECT pg_advisory_unlock($1)", CancellationToken.None, key);
     }
 }

@@ -37,8 +37,12 @@ public static class TaskChangeApplier
                     throw new AnalysisValidationException("Invalid new task or employee.");
                 task = new TrackedTask
                 {
-                    Id = Guid.NewGuid(), TeamId = input.TeamId, EmployeeId = employeeId,
-                    Title = RequiredText(change.Title), StartedAt = effectiveAt, LastActivityAt = effectiveAt
+                    Id = Guid.NewGuid(),
+                    TeamId = input.TeamId,
+                    EmployeeId = employeeId,
+                    Title = RequiredText(change.Title),
+                    StartedAt = effectiveAt,
+                    LastActivityAt = effectiveAt
                 };
                 newTasks.Add(change.NewTaskRef, task);
                 tasks.Add(task.Id, task);
@@ -111,14 +115,24 @@ public static class TaskChangeApplier
         AnalysisChange change, string description, bool blocker) => blocker
         ? new BlockerDetected
         {
-            Source = "analytics", CorrelationId = input.BatchId.ToString(), TeamId = input.TeamId,
-            TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
-            Description = description, EvidenceEventIds = change.EvidenceEventIds
+            Source = "analytics",
+            CorrelationId = input.BatchId.ToString(),
+            TeamId = input.TeamId,
+            TaskId = task.Id,
+            Title = task.Title,
+            EmployeeId = task.EmployeeId,
+            Description = description,
+            EvidenceEventIds = change.EvidenceEventIds
         }
         : new NewTaskReported
         {
-            Source = "analytics", CorrelationId = input.BatchId.ToString(), TeamId = input.TeamId,
-            TaskId = task.Id, Title = task.Title, EmployeeId = task.EmployeeId,
-            Description = description, EvidenceEventIds = change.EvidenceEventIds
+            Source = "analytics",
+            CorrelationId = input.BatchId.ToString(),
+            TeamId = input.TeamId,
+            TaskId = task.Id,
+            Title = task.Title,
+            EmployeeId = task.EmployeeId,
+            Description = description,
+            EvidenceEventIds = change.EvidenceEventIds
         };
 }
