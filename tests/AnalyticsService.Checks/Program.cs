@@ -12,6 +12,8 @@ using Shared.Contracts.Analytics;
 using Shared.Contracts.Telegram;
 
 ValidationChecks.Run();
+TaskChangeApplierChecks.Run();
+if (args.Contains("--analysis-only")) return;
 
 // Only create/drop a uniquely named test database; never modify the supplied database.
 var connection = new NpgsqlConnectionStringBuilder(

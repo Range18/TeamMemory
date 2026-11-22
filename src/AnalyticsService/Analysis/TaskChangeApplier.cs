@@ -1,119 +1,227 @@
-using Shared.Contracts.Analytics;
+﻿using Shared.Contracts.Analytics;
 
 namespace AnalyticsService.Analysis;
-
-public sealed record AppliedChange(TrackedTask Task, AnalysisChange Change, DateTimeOffset EffectiveAt);
-public sealed record AppliedAnalysis(TrackedTask[] Tasks, AppliedChange[] Changes, TaskAnalyticsEvent[] Events);
 
 public static class TaskChangeApplier
 {
     public static AppliedAnalysis Apply(AnalysisInput input, AnalysisResult result, double minimumConfidence)
     {
-        if (result.SchemaVersion != 1 || result.Changes is null || result.Ambiguities is null || result.Ambiguities.Length != 0)
-            throw new AnalysisValidationException("Unsupported schema or ambiguous analysis.");
+        ValidateResult(result);
 
-        // Work on copies: invalid operations cannot leave partially modified state.
-        var tasks = input.Tasks.ToDictionary(t => t.Id, t => AnalysisJson.Read<TrackedTask>(AnalysisJson.Write(t)));
+        // Change copies so a rejected batch cannot modify the input snapshot.
+        var tasks = input.Tasks.ToDictionary(task => task.Id, CopyTask);
         var newTasks = new Dictionary<string, TrackedTask>();
-        var refs = new HashSet<string>();
-        var touched = new HashSet<Guid>();
-        var changes = new List<AppliedChange>();
+        var changeReferences = new HashSet<string>();
+        var changedTaskIds = new HashSet<Guid>();
+        var appliedChanges = new List<AppliedChange>();
         var events = new List<TaskAnalyticsEvent>();
+
         foreach (var change in result.Changes)
         {
-            if (change is null || string.IsNullOrWhiteSpace(change.ChangeRef) || !refs.Add(change.ChangeRef)
-                || !double.IsFinite(change.Confidence) || change.Confidence < minimumConfidence || change.Confidence > 1
-                || change.EvidenceEventIds is null || change.EvidenceEventIds.Length == 0)
-                throw new AnalysisValidationException("Invalid change reference, confidence or evidence.");
-            var evidence = change.EvidenceEventIds.Select(id => input.Messages.SingleOrDefault(m => m.EventId == id)
-                ?? throw new AnalysisValidationException("Evidence is outside the batch.")).ToArray();
-            var effectiveAt = evidence.Max(m => m.OccurredAt);
+            ValidateChange(change, changeReferences, minimumConfidence);
+            var evidence = FindEvidence(input, change);
+            var effectiveAt = evidence.Max(message => message.OccurredAt);
             TrackedTask task;
+
             if (change.Action == "create_task")
             {
-                if (change.TaskId is not null || string.IsNullOrWhiteSpace(change.NewTaskRef)
-                    || newTasks.ContainsKey(change.NewTaskRef) || change.EmployeeId is not { } employeeId
-                    || !evidence.Any(m => m.EmployeeId == employeeId))
-                    throw new AnalysisValidationException("Invalid new task or employee.");
-                task = new TrackedTask
-                {
-                    Id = Guid.NewGuid(),
-                    TeamId = input.TeamId,
-                    EmployeeId = employeeId,
-                    Title = RequiredText(change.Title),
-                    StartedAt = effectiveAt,
-                    LastActivityAt = effectiveAt
-                };
-                newTasks.Add(change.NewTaskRef, task);
+                task = CreateTask(input.TeamId, change, evidence, effectiveAt, newTasks);
+                newTasks.Add(change.NewTaskRef!, task);
                 tasks.Add(task.Id, task);
-                events.Add(CreateEvent(input, task, change, task.Title, false));
+                events.Add(CreateTaskReportedEvent(input, task, change));
             }
             else
             {
-                if ((change.TaskId is null) == (change.NewTaskRef is null))
-                    throw new AnalysisValidationException("Specify exactly one task reference.");
-                task = change.TaskId is { } id
-                    ? tasks.GetValueOrDefault(id) ?? throw new AnalysisValidationException("Unknown task.")
-                    : newTasks.GetValueOrDefault(change.NewTaskRef!) ?? throw new AnalysisValidationException("Unknown new task reference.");
-                var original = input.Tasks.SingleOrDefault(t => t.Id == task.Id);
-                if (task.TeamId != input.TeamId || (original is not null && effectiveAt < original.LastActivityAt))
-                    throw new AnalysisValidationException("Task is outside team or evidence is older than current state.");
-                switch (change.Action)
-                {
-                    case "record_progress":
-                        RequiredText(change.Description);
-                        break;
-                    case "add_blocker":
-                        if (task.Status == "done")
-                            throw new AnalysisValidationException("Cannot block a completed task.");
-                        var blocker = RequiredText(change.Description);
-                        if (!task.Blockers.Contains(blocker, StringComparer.OrdinalIgnoreCase))
-                        {
-                            task.Blockers.Add(blocker);
-                            events.Add(CreateEvent(input, task, change, blocker, true));
-                        }
-                        task.Status = "blocked";
-                        break;
-                    case "resolve_blocker":
-                        if (!task.Blockers.Remove(RequiredText(change.Description)))
-                            throw new AnalysisValidationException("Unknown open blocker.");
-                        if (task.Blockers.Count == 0) task.Status = "in_progress";
-                        break;
-                    case "set_next_step":
-                        task.NextStep = RequiredText(change.Description);
-                        break;
-                    case "set_estimate":
-                        if (change.EstimateDays is not { } days || !double.IsFinite(days) || days <= 0 || days > 3650)
-                            throw new AnalysisValidationException("Invalid calendar-day estimate.");
-                        task.EstimateDays = days;
-                        break;
-                    case "set_status":
-                        if (change.Status is not ("in_progress" or "done") || task.Blockers.Count != 0)
-                            throw new AnalysisValidationException("Invalid status transition.");
-                        task.Status = change.Status;
-                        if (task.Status == "done") task.AtRisk = false;
-                        break;
-                    default:
-                        throw new AnalysisValidationException("Unknown action.");
-                }
+                task = FindTask(change, tasks, newTasks);
+                ValidateTaskChange(input, task, effectiveAt);
+                ApplyTaskChange(input, task, change, events);
             }
-            task.LastActivityAt = effectiveAt > task.LastActivityAt ? effectiveAt : task.LastActivityAt;
-            touched.Add(task.Id);
-            changes.Add(new(task, change, effectiveAt));
+
+            if (effectiveAt > task.LastActivityAt)
+                task.LastActivityAt = effectiveAt;
+
+            changedTaskIds.Add(task.Id);
+            appliedChanges.Add(new AppliedChange(task, change, effectiveAt));
         }
-        foreach (var id in touched) tasks[id].Version++;
-        return new(touched.Select(id => tasks[id]).ToArray(), changes.ToArray(), events.ToArray());
+
+        var changedTasks = changedTaskIds.Select(id => tasks[id]).ToArray();
+        foreach (var task in changedTasks)
+            task.Version++;
+
+        return new AppliedAnalysis(changedTasks, appliedChanges.ToArray(), events.ToArray());
     }
 
     public static bool IsAtRisk(TrackedTask task, DateTimeOffset now, double multiplier) =>
         task.Status != "done" && task.EstimateDays is { } days && (now - task.StartedAt).TotalDays > days * multiplier;
 
-    private static string RequiredText(string? text) => !string.IsNullOrWhiteSpace(text) && text.Length <= 2000
-        ? text : throw new AnalysisValidationException("Expected nonempty text up to 2000 characters.");
+    private static void ValidateResult(AnalysisResult result)
+    {
+        if (result.SchemaVersion != 1)
+            throw new AnalysisValidationException("Unsupported analysis schema version.");
+        if (result.Changes is null || result.Ambiguities is null)
+            throw new AnalysisValidationException("Changes and ambiguities are required.");
+        if (result.Ambiguities.Length > 0)
+            throw new AnalysisValidationException("Ambiguous analysis requires review.");
+    }
 
-    private static TaskAnalyticsEvent CreateEvent(AnalysisInput input, TrackedTask task,
-        AnalysisChange change, string description, bool blocker) => blocker
-        ? new BlockerDetected
+    private static void ValidateChange(AnalysisChange change, HashSet<string> references, double minimumConfidence)
+    {
+        if (change is null)
+            throw new AnalysisValidationException("An analysis change must not be null.");
+        if (string.IsNullOrWhiteSpace(change.ChangeRef))
+            throw new AnalysisValidationException("A change reference is required.");
+        if (!references.Add(change.ChangeRef))
+            throw new AnalysisValidationException("Change references must be unique within the batch.");
+        if (!double.IsFinite(change.Confidence) || change.Confidence < minimumConfidence || change.Confidence > 1)
+            throw new AnalysisValidationException("Change confidence is outside the accepted range.");
+        if (change.EvidenceEventIds is null || change.EvidenceEventIds.Length == 0)
+            throw new AnalysisValidationException("At least one evidence message is required.");
+    }
+
+    private static AnalysisMessage[] FindEvidence(AnalysisInput input, AnalysisChange change) =>
+        change.EvidenceEventIds.Select(eventId => input.Messages.SingleOrDefault(message => message.EventId == eventId)
+            ?? throw new AnalysisValidationException("Evidence is outside the batch.")).ToArray();
+
+    private static TrackedTask CreateTask(string teamId, AnalysisChange change, AnalysisMessage[] evidence,
+        DateTimeOffset effectiveAt, Dictionary<string, TrackedTask> newTasks)
+    {
+        if (change.TaskId is not null)
+            throw new AnalysisValidationException("A new task must not specify task_id.");
+        if (string.IsNullOrWhiteSpace(change.NewTaskRef))
+            throw new AnalysisValidationException("A new task reference is required.");
+        if (newTasks.ContainsKey(change.NewTaskRef))
+            throw new AnalysisValidationException("A new task reference must be unique within the batch.");
+        if (change.EmployeeId is not { } employeeId)
+            throw new AnalysisValidationException("A new task must specify an employee.");
+        if (!evidence.Any(message => message.EmployeeId == employeeId))
+            throw new AnalysisValidationException("The employee must be an author of an evidence message.");
+
+        return new TrackedTask
+        {
+            Id = Guid.NewGuid(),
+            TeamId = teamId,
+            EmployeeId = employeeId,
+            Title = RequireText(change.Title),
+            StartedAt = effectiveAt,
+            LastActivityAt = effectiveAt
+        };
+    }
+
+    private static TrackedTask FindTask(AnalysisChange change, Dictionary<Guid, TrackedTask> tasks,
+        Dictionary<string, TrackedTask> newTasks)
+    {
+        var hasTaskId = change.TaskId is not null;
+        var hasNewTaskReference = change.NewTaskRef is not null;
+        if (hasTaskId == hasNewTaskReference)
+            throw new AnalysisValidationException("Specify exactly one task reference.");
+
+        if (change.TaskId is { } taskId)
+            return tasks.GetValueOrDefault(taskId)
+                ?? throw new AnalysisValidationException("Unknown task.");
+
+        return newTasks.GetValueOrDefault(change.NewTaskRef!)
+            ?? throw new AnalysisValidationException("Unknown new task reference.");
+    }
+
+    private static void ValidateTaskChange(AnalysisInput input, TrackedTask task, DateTimeOffset effectiveAt)
+    {
+        if (task.TeamId != input.TeamId)
+            throw new AnalysisValidationException("Task is outside the team.");
+
+        // Compare against the original snapshot, not earlier changes in this batch.
+        var originalTask = input.Tasks.SingleOrDefault(original => original.Id == task.Id);
+        if (originalTask is not null && effectiveAt < originalTask.LastActivityAt)
+            throw new AnalysisValidationException("Evidence is older than the current task state.");
+    }
+
+    private static void ApplyTaskChange(AnalysisInput input, TrackedTask task, AnalysisChange change,
+        List<TaskAnalyticsEvent> events)
+    {
+        switch (change.Action)
+        {
+            case "record_progress":
+                RequireText(change.Description);
+                break;
+            case "add_blocker":
+                AddBlocker(input, task, change, events);
+                break;
+            case "resolve_blocker":
+                ResolveBlocker(task, change.Description);
+                break;
+            case "set_next_step":
+                task.NextStep = RequireText(change.Description);
+                break;
+            case "set_estimate":
+                SetEstimate(task, change.EstimateDays);
+                break;
+            case "set_status":
+                SetStatus(task, change.Status);
+                break;
+            default:
+                throw new AnalysisValidationException("Unknown action.");
+        }
+    }
+
+    private static void AddBlocker(AnalysisInput input, TrackedTask task, AnalysisChange change,
+        List<TaskAnalyticsEvent> events)
+    {
+        if (task.Status == "done")
+            throw new AnalysisValidationException("Cannot block a completed task.");
+
+        var blocker = RequireText(change.Description);
+        if (!task.Blockers.Contains(blocker, StringComparer.OrdinalIgnoreCase))
+        {
+            task.Blockers.Add(blocker);
+            events.Add(CreateBlockerDetectedEvent(input, task, change, blocker));
+        }
+        task.Status = "blocked";
+    }
+
+    private static void ResolveBlocker(TrackedTask task, string? description)
+    {
+        if (!task.Blockers.Remove(RequireText(description)))
+            throw new AnalysisValidationException("Unknown open blocker.");
+        if (task.Blockers.Count == 0)
+            task.Status = "in_progress";
+    }
+
+    private static void SetEstimate(TrackedTask task, double? estimateDays)
+    {
+        if (estimateDays is not { } days)
+            throw new AnalysisValidationException("A calendar-day estimate is required.");
+        if (!double.IsFinite(days) || days <= 0 || days > 3650)
+            throw new AnalysisValidationException("Calendar-day estimate must be finite, positive and at most 3650.");
+
+        task.EstimateDays = days;
+    }
+
+    private static void SetStatus(TrackedTask task, string? status)
+    {
+        if (status is not ("in_progress" or "done"))
+            throw new AnalysisValidationException("Status must be in_progress or done.");
+        if (task.Blockers.Count > 0)
+            throw new AnalysisValidationException("Cannot set status while the task has open blockers.");
+
+        task.Status = status;
+        if (status == "done")
+            task.AtRisk = false;
+    }
+
+    private static string RequireText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            throw new AnalysisValidationException("Nonempty text is required.");
+        if (text.Length > 2000)
+            throw new AnalysisValidationException("Text must not exceed 2000 characters.");
+
+        return text;
+    }
+
+    private static TrackedTask CopyTask(TrackedTask task) =>
+        AnalysisJson.Read<TrackedTask>(AnalysisJson.Write(task));
+
+    private static NewTaskReported CreateTaskReportedEvent(AnalysisInput input, TrackedTask task, AnalysisChange change) =>
+        new()
         {
             Source = "analytics",
             CorrelationId = input.BatchId.ToString(),
@@ -121,10 +229,12 @@ public static class TaskChangeApplier
             TaskId = task.Id,
             Title = task.Title,
             EmployeeId = task.EmployeeId,
-            Description = description,
+            Description = task.Title,
             EvidenceEventIds = change.EvidenceEventIds
-        }
-        : new NewTaskReported
+        };
+
+    private static BlockerDetected CreateBlockerDetectedEvent(AnalysisInput input, TrackedTask task,
+        AnalysisChange change, string description) => new()
         {
             Source = "analytics",
             CorrelationId = input.BatchId.ToString(),
