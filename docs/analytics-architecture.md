@@ -19,7 +19,7 @@ flowchart LR
     MQ --> Consumer[TelegramMessageCreatedConsumer]
     Consumer --> DB[(PostgreSQL)]
     DB --> Worker[AnalysisWorker]
-    Worker --> LLM[Локальная GGUF-модель / LLamaSharp]
+    Worker --> LLM[LLM-сервер / HTTP API]
     LLM --> Validator[TaskChangeApplier]
     Validator --> DB
     DB --> Publisher[OutboxPublisher]
@@ -39,12 +39,12 @@ flowchart LR
 | `AnalyticsDatabaseInitializer` | Создание таблиц по модели EF Core для пустой БД при запуске |
 | `DatabaseSessionLock` | PostgreSQL advisory-блокировки через DistributedLock.Postgres |
 | `AnalysisWorker` | Периодический расчёт риска, формирование групп и обработка одной доступной группы за итерацию |
-| `LlamaMessageBatchAnalyzer` | Построение промпта и локальный инференс через LLamaSharp |
+| `HttpMessageBatchAnalyzer`, `AnalysisPrompt` | Формирование сообщений и вызов OpenAI-совместимого LLM API через HTTP |
 | `TaskChangeApplier` | Проверка результата модели и построение изменений состояния без записи в БД |
 | `OutboxPublisher` | Публикация сохранённых исходящих событий |
 | `IntegrationEventConsumer<T>`, `GitPushCommittedConsumer` | Логирование событий, не включённых в основной сценарий анализа |
 
-Основные зависимости: MassTransit 8.5.12, Npgsql.EntityFrameworkCore.PostgreSQL 10.0.0, DistributedLock.Postgres 1.3.1 и LLamaSharp 0.26.0. В корневом Docker Compose определены PostgreSQL 17 и RabbitMQ 4.4 Management. Backend LLamaSharp при сборке по умолчанию — CPU.
+Основные зависимости: MassTransit 8.5.12, Npgsql.EntityFrameworkCore.PostgreSQL 10.0.0, DistributedLock.Postgres 1.3.1 и Microsoft.Extensions.Http 10.0.7. В корневом Docker Compose определены PostgreSQL 17 и RabbitMQ 4.4 Management. LLM запускается отдельным сервером; LLamaSharp и его нативный backend удалены из Analytics.
 
 ## Путь сообщения
 
@@ -74,13 +74,15 @@ flowchart LR
 
 Вход анализа сохраняется в `analysis_batches.input`. При повторной попытке используется тот же снимок; сохранённый результат модели также используется повторно.
 
-### 4. Локальный LLM-анализ
+### 4. Анализ через LLM API
 
-Путь GGUF-модели разрешается относительно content root приложения. Веса загружаются при первом анализе и переиспользуются; контекст модели создаётся заново для каждой группы.
+`HttpMessageBatchAnalyzer` использует именованный клиент `LlmApi` из `IHttpClientFactory` и отправляет отдельный `POST` на `LlmApi:Endpoint` для каждой группы. Протокол — OpenAI-совместимый Chat Completions. API-ключ, если задан, передаётся как Bearer-заголовок. Адрес и модель задаются конфигурацией; сервер модели может быть локальным или удалённым.
 
-Модель получает JSON с командой, сообщениями и задачами. Промпт требует только JSON, запрещает выполнять инструкции из переписки и придумывать факты. Схема результата содержит `schema_version`, `changes` и `ambiguities`. Каждое изменение должно ссылаться на сообщения-доказательства из текущей группы.
+Модель получает отдельное system-сообщение с инструкциями из `AnalysisPrompt` и user-сообщение с JSON команды, сообщений и задач. Инструкция требует только JSON, запрещает выполнять инструкции из переписки и придумывать факты. Схема результата содержит `schema_version`, `changes` и `ambiguities`. Каждое изменение должно ссылаться на сообщения-доказательства из текущей группы.
 
-Перед инференсом проверяется, что промпт, резерв ответа и 32 дополнительных токена помещаются в контекст. Переполнение не приводит к автоматической обрезке: группа требует проверки. Температура генерации — `0.1`; время инференса ограничено настройкой. Грамматика генерации не задаётся: структура и содержимое проверяются после получения ответа.
+Запрос задаёт `max_tokens`, `temperature = 0.1` и `stream = false`. По умолчанию включён JSON-режим `response_format: { "type": "json_object" }`; для серверов без его поддержки можно отключить `UseJsonMode`. Тайм-аут распространяется на HTTP-вызов и чтение ответа. Результат берётся из `choices[0].message.content`; пустой ответ, незавершённая генерация и невалидный JSON требуют проверки. HTTP-ошибки и тайм-ауты обрабатываются существующим механизмом повторов группы.
+
+Токенизатор и локальная проверка `ContextSize` больше не используются. Контекстные ограничения проверяет LLM-сервер, вход не обрезается автоматически. Реализация и настройка протокола описаны в [README сервиса](../src/AnalyticsService/README.md#формат-вызова-llm).
 
 ### 5. Проверка и применение
 
@@ -133,7 +135,7 @@ AND (текущее UTC-время - started_at) в днях > estimate_days × 
 | --- | --- |
 | `ready` | Ожидает анализа или повторной попытки |
 | `applied` | Проверенные изменения применены |
-| `needs_review` | Неоднозначный/невалидный результат, переполнение контекста, избыток задач-кандидатов или конфликт версии при применении |
+| `needs_review` | Неоднозначный/невалидный или незавершённый результат, избыток задач-кандидатов или конфликт версии при применении |
 | `failed` | Исчерпан лимит попыток обработки |
 
 Для временных ошибок используется задержка `min(300, 2^attempt × 5)` секунд; по умолчанию лимит — 5 попыток. Отдельный статус `processing` не используется. При перезапуске доступная группа `ready` может быть обработана снова; сохранённый результат позволяет не вызывать модель повторно.
@@ -149,11 +151,13 @@ AND (текущее UTC-время - started_at) в днях > estimate_days × 
 | `MaxMessages` / `PollSeconds` | 100 / 5 секунд |
 | `MaxAttempts` / `MinimumConfidence` | 5 / 0.85 |
 | `RiskMultiplier` | 1.5 |
-| `Llama:ModelPath` | `models/qwen2.5-7b-instruct-q5_k_m.gguf` |
-| `ContextSize` / `MaxTokens` | 8192 / 1500 токенов |
-| `GpuLayerCount` / `TimeoutSeconds` | 0 / 300 секунд |
+| `LlmApi:Endpoint` | `http://localhost:11434/v1/chat/completions` |
+| `LlmApi:Model` | `qwen2.5:7b` |
+| `LlmApi:ApiKey` | Не задан; опционален для локальных серверов |
+| `LlmApi:MaxTokens` / `LlmApi:TimeoutSeconds` | 1500 токенов / 300 секунд |
+| `LlmApi:UseJsonMode` | `true` |
 
-Подключения задаются в `ConnectionStrings:Analytics` и `RabbitMq`. Параметры анализа и модели валидируются при старте; файл модели требуется при первом вызове анализа. Сервис использует JSON-логи консоли.
+Подключения задаются в `ConnectionStrings:Analytics` и `RabbitMq`. Параметры анализа и API валидируются при старте. Сервер LLM и выбранная модель должны быть доступны при обработке групп. Сервис использует JSON-логи консоли.
 
 ## Текущие ограничения
 
@@ -172,7 +176,8 @@ AND (текущее UTC-время - started_at) в днях > estimate_days × 
 - ORM-сущности: [InboxEvent](../src/AnalyticsService/Infrastructure/Persistence/InboxEvent.cs), [AnalysisBatch](../src/AnalyticsService/Infrastructure/Persistence/AnalysisBatch.cs), [TaskEntity](../src/AnalyticsService/Infrastructure/Persistence/TaskEntity.cs), [TaskChange](../src/AnalyticsService/Infrastructure/Persistence/TaskChange.cs), [OutboxMessage](../src/AnalyticsService/Infrastructure/Persistence/OutboxMessage.cs)
 - [Блокировки](../src/AnalyticsService/Infrastructure/Persistence/DatabaseSessionLock.cs)
 - [Фоновый анализ](../src/AnalyticsService/Processing/AnalysisWorker.cs)
-- [LLM-анализатор](../src/AnalyticsService/Analysis/LlamaMessageBatchAnalyzer.cs)
+- [HTTP-анализатор](../src/AnalyticsService/Analysis/HttpMessageBatchAnalyzer.cs)
+- [Инструкции анализа](../src/AnalyticsService/Analysis/AnalysisPrompt.cs)
 - [Правила применения изменений](../src/AnalyticsService/Analysis/TaskChangeApplier.cs)
 - [Публикация outbox](../src/AnalyticsService/Processing/OutboxPublisher.cs)
 - [Контракты исходящих событий](../shared/Shared.Contracts/Analytics/AnalyticsEvents.cs)

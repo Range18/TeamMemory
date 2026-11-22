@@ -11,8 +11,15 @@ using Npgsql;
 using Shared.Contracts.Analytics;
 using Shared.Contracts.Telegram;
 
+if (args.Contains("--llm-api-only"))
+{
+    await LlmApiChecks.Run();
+    return;
+}
+
 ValidationChecks.Run();
 TaskChangeApplierChecks.Run();
+await LlmApiChecks.Run();
 if (args.Contains("--analysis-only")) return;
 
 // Only create/drop a uniquely named test database; never modify the supplied database.

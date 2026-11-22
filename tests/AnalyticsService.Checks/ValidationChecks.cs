@@ -44,7 +44,7 @@ internal static class ValidationChecks
         }
 
         AssertValid(new AnalyticsOptions(), true);
-        AssertValid(new LlamaOptions(), true);
+        AssertValid(new LlmApiOptions(), true);
         AssertValid(new AnalyticsOptions { MaxWaitSeconds = 59 }, false);
         AssertValid(new AnalyticsOptions { MaxMessages = 101 }, false);
         AssertValid(new AnalyticsOptions { PollSeconds = 0 }, false);
@@ -52,10 +52,11 @@ internal static class ValidationChecks
         AssertValid(new AnalyticsOptions { RiskMultiplier = double.PositiveInfinity }, false);
         AssertValid(new AnalyticsOptions { RiskMultiplier = double.NaN }, false);
         AssertValid(new AnalyticsOptions { RiskMultiplier = double.Epsilon }, true);
-        AssertValid(new LlamaOptions { MaxTokens = 8192 }, false);
-        AssertValid(new LlamaOptions { ContextSize = 1023 }, false);
-        AssertValid(new LlamaOptions { ModelPath = " " }, false);
-        AssertValid(new LlamaOptions { TimeoutSeconds = 0 }, false);
+        AssertValid(new LlmApiOptions { MaxTokens = 0 }, false);
+        AssertValid(new LlmApiOptions { Endpoint = "not-a-url" }, false);
+        AssertValid(new LlmApiOptions { Endpoint = "file:///model" }, false);
+        AssertValid(new LlmApiOptions { Model = " " }, false);
+        AssertValid(new LlmApiOptions { TimeoutSeconds = 0 }, false);
         Console.WriteLine("PASS: DTO boundaries, required fields, finite numbers and cross-property validation");
     }
 

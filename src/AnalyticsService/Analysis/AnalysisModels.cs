@@ -50,30 +50,6 @@ public sealed class AnalyticsOptions : IValidatableObject
     }
 }
 
-public sealed class LlamaOptions : IValidatableObject
-{
-    [Required]
-    public string ModelPath { get; set; } = "models/qwen2.5-7b-instruct-q5_k_m.gguf";
-
-    [Range(typeof(uint), "1024", "4294967295")]
-    public uint ContextSize { get; set; } = 8192;
-
-    public int GpuLayerCount { get; set; }
-
-    [Range(1, int.MaxValue)]
-    public int MaxTokens { get; set; } = 1500;
-
-    [Range(1, int.MaxValue)]
-    public int TimeoutSeconds { get; set; } = 300;
-
-    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
-    {
-        if (MaxTokens >= ContextSize)
-            yield return new ValidationResult("MaxTokens must be smaller than ContextSize.",
-                [nameof(MaxTokens), nameof(ContextSize)]);
-    }
-}
-
 public sealed record AnalysisMessage(Guid EventId, long MessageId, long EmployeeId,
     string Author, string Text, DateTimeOffset OccurredAt);
 

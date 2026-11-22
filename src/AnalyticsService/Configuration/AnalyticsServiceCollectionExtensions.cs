@@ -14,8 +14,8 @@ public static class AnalyticsServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        services.AddOptions<LlamaOptions>()
-            .BindConfiguration("Llama")
+        services.AddOptions<LlmApiOptions>()
+            .BindConfiguration("LlmApi")
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
@@ -23,7 +23,9 @@ public static class AnalyticsServiceCollectionExtensions
             configuration.GetConnectionString("Analytics")
             ?? throw new InvalidOperationException("ConnectionStrings:Analytics is required.")));
         services.AddSingleton<AnalyticsStore>();
-        services.AddSingleton<IMessageBatchAnalyzer, LlamaMessageBatchAnalyzer>();
+        services.AddHttpClient(HttpMessageBatchAnalyzer.HttpClientName,
+            client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddSingleton<IMessageBatchAnalyzer, HttpMessageBatchAnalyzer>();
         services.AddHostedService<AnalyticsDatabaseInitializer>();
 
         return services;

@@ -10,6 +10,12 @@
 dotnet run --project tests/AnalyticsService.Checks/AnalyticsService.Checks.csproj -- --analysis-only
 ```
 
+HTTP-анализатор проверяется с подменным `HttpMessageHandler`: endpoint, модель, Bearer-заголовок, JSON-режим, разбор ответа, HTTP-ошибки, неполный ответ, отмена и тайм-аут. Реальная LLM и API-ключ для проверок не нужны. Только HTTP-проверки можно запустить отдельно:
+
+```powershell
+dotnet run --project tests/AnalyticsService.Checks/AnalyticsService.Checks.csproj -- --llm-api-only
+```
+
 Из корня репозитория:
 
 ```powershell
