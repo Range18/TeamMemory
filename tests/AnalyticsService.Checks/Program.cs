@@ -17,6 +17,7 @@ if (args.Contains("--llm-api-only"))
     return;
 }
 
+EnvironmentConfigurationChecks.Run();
 ValidationChecks.Run();
 TaskChangeApplierChecks.Run();
 await LlmApiChecks.Run();

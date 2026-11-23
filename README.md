@@ -56,8 +56,14 @@ Copy-Item .env.example .env
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather |
 | `WEBHOOK_BASE_URL` | Личный ngrok-адрес, например `https://your-name.ngrok-free.dev` |
+| `LlmApi__Endpoint`, `LlmApi__Model` | Endpoint и модель OpenAI-совместимого LLM API; в шаблоне — DeepSeek |
+| `LlmApi__ApiKey` | API-ключ LLM |
+| `ConnectionStrings__Analytics` | Строка подключения Analytics к PostgreSQL |
+| `RabbitMq__*` | Подключение приложения к RabbitMQ |
+| `Analytics__ChatTeams__<ChatId>` | Привязка Telegram-чата к команде |
+| `Analytics__*`, `LlmApi__*` | Интервалы, лимиты и остальные параметры; полный набор в `.env.example` |
 
-`WEBHOOK_BASE_URL` указывается без завершающего `/`. Переменные ОС имеют приоритет над `.env`.
+`WEBHOOK_BASE_URL` указывается без завершающего `/`. Ingestion и Analytics загружают `.env` при старте. Переменные ОС имеют приоритет над `.env`. После изменения файла сервис нужно перезапустить. Подробности настройки LLM — в [README Analytics](src/AnalyticsService/README.md).
 
 ## Telegram и ngrok
 

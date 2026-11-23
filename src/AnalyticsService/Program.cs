@@ -1,5 +1,8 @@
 using AnalyticsService.Configuration;
 using AnalyticsService.Processing;
+using DotNetEnv;
+
+Env.NoClobber().TraversePath().Load(Path.Combine(AppContext.BaseDirectory, ".env"));
 
 var builder = Host.CreateApplicationBuilder(args);
 

@@ -12,7 +12,29 @@ Analytics принимает события Telegram, сохраняет их в
 
 ## Запуск
 
-Нужны .NET 10 SDK, PostgreSQL, RabbitMQ и доступный OpenAI-совместимый endpoint `POST /v1/chat/completions`. По умолчанию указан локальный Ollama API на `http://localhost:11434/v1/chat/completions` с моделью `qwen2.5:7b`. Сервер модели запускается отдельно; Docker Compose проекта поднимает только БД и брокер.
+Нужны .NET 10 SDK, PostgreSQL, RabbitMQ и доступный OpenAI-совместимый Chat Completions API. Рабочие настройки хранятся в корневом `.env`; [шаблон](../../.env.example) настроен на DeepSeek. В `appsettings.json` остаётся логирование. Для локальной модели запускайте LLM-сервер отдельно: Docker Compose проекта поднимает только БД и брокер.
+
+При первом запуске создайте `.env`, если его ещё нет:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Заполните ключ и привязку своего Telegram-чата к команде:
+
+```dotenv
+LlmApi__Endpoint=https://api.deepseek.com/chat/completions
+LlmApi__Model=deepseek-flash
+LlmApi__ApiKey=your-api-key
+LlmApi__MaxTokens=1500
+LlmApi__TimeoutSeconds=300
+LlmApi__UseJsonMode=true
+Analytics__ChatTeams__-1001234567890=team-backend
+```
+
+Двойное подчёркивание `__` разделяет вложенные настройки .NET: `LlmApi__ApiKey` соответствует `LlmApi:ApiKey`. Замените пример ChatId своим. Полный набор параметров БД, RabbitMQ и обработки указан в `.env.example`. Настройки подключения должны соответствовать фактическим учётным данным PostgreSQL и RabbitMQ; изменение `.env` не меняет пользователей уже работающих контейнеров.
+
+Analytics загружает ближайший `.env`, поднимаясь от каталога приложения вверх, до создания Host. Переменные окружения текущего процесса имеют приоритет и не перезаписываются значениями из файла. После изменения `.env` перезапустите сервис. При развёртывании без `.env` те же настройки можно передавать через переменные окружения.
 
 Из корня репозитория:
 
@@ -22,35 +44,7 @@ dotnet build TeamMemory.sln
 dotnet run --project src/AnalyticsService/AnalyticsService.csproj
 ```
 
-До отправки сообщений задайте `Analytics:ChatTeams`, `LlmApi:Endpoint` и `LlmApi:Model` в [appsettings.json](appsettings.json) или конфигурации окружения. По умолчанию привязка чатов пустая. Таблицы пустой БД создаются при старте. Файл модели и LLamaSharp в процессе Analytics больше не используются.
-
-Пример конфигурации:
-
-```json
-{
-  "Analytics": {
-    "ChatTeams": {
-      "-1001234567890": "team-backend"
-    }
-  },
-  "LlmApi": {
-    "Endpoint": "http://localhost:11434/v1/chat/completions",
-    "Model": "qwen2.5:7b",
-    "MaxTokens": 1500,
-    "TimeoutSeconds": 300,
-    "UseJsonMode": true
-  }
-}
-```
-
-Если сервер требует ключ, передайте его через переменную окружения или .NET User Secrets; в репозиторий ключ не записывается:
-
-```powershell
-$env:LlmApi__ApiKey = "your-api-key"
-$env:LlmApi__Endpoint = "https://your-llm-server.example/v1/chat/completions"
-$env:LlmApi__Model = "your-model-id"
-dotnet run --project src/AnalyticsService/AnalyticsService.csproj
-```
+`.env` исключён из Git, ключ в `.env.example` пустой. Таблицы пустой БД создаются при старте. Файл модели и LLamaSharp в процессе Analytics не используются.
 
 ### Формат вызова LLM
 
