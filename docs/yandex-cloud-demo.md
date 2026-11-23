@@ -81,17 +81,17 @@ Worker публичный, но VM проверяет `X-Telegram-Bot-Api-Secret
 Преимущество: URL Worker не меняется при остановке/запуске VM. После старта VM
 webhook уже настроен и перерегистрация не нужна.
 
-Если Telegram накопил старые обновления за время простоя, перед показом можно
-сбросить очередь через временный SSH SOCKS-прокси на отдельном сервере
-(например, `ssh -N -D 127.0.0.1:1081 fkb`):
+Если Telegram накопил старые обновления за время простоя, сбросьте очередь
+с любой машины, у которой есть доступ к `api.telegram.org` (например, с телефона
+через VPN):
 
 ```powershell
 $token = ((Get-Content .env | Where-Object { $_ -match '^\s*TELEGRAM_BOT_TOKEN\s*=' }) -split '=',2)[1].Trim()
-curl.exe --socks5-hostname 127.0.0.1:1081 -X POST `
-  "https://api.telegram.org/bot$token/deleteWebhook?drop_pending_updates=true"
+curl.exe -X POST "https://api.telegram.org/bot$token/deleteWebhook?drop_pending_updates=true"
 ```
 
 Затем заново установить webhook на Worker (URL и секрет — из `.env.production`).
+Сервер `fkb` для работы демо не используется.
 
 ## Логи и диагностика
 
