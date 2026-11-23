@@ -1,0 +1,17 @@
+{
+    email {$ACME_EMAIL}
+    admin off
+}
+
+{$APP_DOMAIN} {
+    @telegram {
+        method POST
+        path /api/telegram/webhook
+    }
+    handle @telegram {
+        reverse_proxy ingestion:8080
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

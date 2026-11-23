@@ -1,8 +1,11 @@
 using MassTransit;
 using DashboardService.Consumers;
 using Shared.Contracts.Analytics;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddHealthChecks();
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(45));
 
 var rabbitMq = builder.Configuration.GetSection("RabbitMq");
 
@@ -27,4 +30,6 @@ builder.Services.AddMassTransit(x =>
 });
 
 var app = builder.Build();
+app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.Run();

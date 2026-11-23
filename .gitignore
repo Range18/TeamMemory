@@ -5,6 +5,8 @@
 
 # dotenv files
 .env
+.env.production
+backups/
 
 # User-specific files
 *.rsuser
