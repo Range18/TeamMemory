@@ -11,6 +11,9 @@
 	handle @telegram {
 		reverse_proxy ingestion:8080
 	}
+	handle /health* {
+		reverse_proxy dashboard:8080
+	}
 	handle /api/* {
 		reverse_proxy dashboard:8080
 	}
