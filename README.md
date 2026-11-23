@@ -1,12 +1,12 @@
 # AI-Агент для анализа активности команды
 
-> **Кратко:** TeamMemory собирает события рабочих чатов через RabbitMQ, анализирует их локальной LLM, сохраняет задачи в PostgreSQL и передаёт Dashboard события новых задач, блокеров и риска. Сейчас реализован основной Telegram-сценарий.
+> **Кратко:** TeamMemory собирает события рабочих чатов через RabbitMQ, анализирует их через LLM API, сохраняет задачи в PostgreSQL и передаёт Dashboard события новых задач, блокеров и риска. Сейчас реализован основной Telegram-сценарий.
 
 ## О проекте
 
 Проект состоит из трёх .NET-микросервисов: Ingestion принимает события, Analytics обрабатывает их, Dashboard — каркас для дайджестов.
-Analytics сохраняет Telegram-события в PostgreSQL, анализирует группы сообщений локальной
-GGUF-моделью через LLamaSharp и публикует события задач, блокеров и риска для Dashboard.
+Analytics сохраняет Telegram-события в PostgreSQL, анализирует группы сообщений через
+OpenAI-совместимый HTTP API модели и публикует события задач, блокеров и риска для Dashboard.
 Запуск описан в [документации Analytics](src/AnalyticsService/README.md).
 GitHub-коннекторы, дайджесты и SignalR — в планах.
 
@@ -56,8 +56,14 @@ Copy-Item .env.example .env
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather |
 | `WEBHOOK_BASE_URL` | Личный ngrok-адрес, например `https://your-name.ngrok-free.dev` |
+| `LlmApi__Endpoint`, `LlmApi__Model` | Endpoint и модель OpenAI-совместимого LLM API; в шаблоне — DeepSeek |
+| `LlmApi__ApiKey` | API-ключ LLM |
+| `ConnectionStrings__Analytics` | Строка подключения Analytics к PostgreSQL |
+| `RabbitMq__*` | Подключение приложения к RabbitMQ |
+| `Analytics__ChatTeams__<ChatId>` | Необязательное переопределение команды; по умолчанию используется ID чата |
+| `Analytics__*`, `LlmApi__*` | Интервалы, лимиты и остальные параметры; полный набор в `.env.example` |
 
-`WEBHOOK_BASE_URL` указывается без завершающего `/`. Переменные ОС имеют приоритет над `.env`.
+`WEBHOOK_BASE_URL` указывается без завершающего `/`. Ingestion и Analytics загружают `.env` при старте. Переменные ОС имеют приоритет над `.env`. После изменения файла сервис нужно перезапустить. Подробности настройки LLM — в [README Analytics](src/AnalyticsService/README.md).
 
 ## Telegram и ngrok
 
@@ -158,7 +164,7 @@ Analytics подписан на все восемь конкретных соб�
 ## Ограничения
 
 - GitHub webhooks не реализованы.
-- Нет дайджестов и SignalR. Для AI-анализа нужно отдельно скачать GGUF-модель и настроить привязку чата к команде.
+- Нет дайджестов и SignalR. Для AI-анализа нужно настроить доступный LLM API и модель; команда определяется автоматически по ID чата.
 - Нет `secret_token` для Telegram webhook и HMAC для GitHub.
 - Inbox/outbox Analytics хранятся в PostgreSQL. Редактирования Telegram и Git пока только логируются; CI отсутствует.
 
