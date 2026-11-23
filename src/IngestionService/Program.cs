@@ -19,6 +19,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 
 var rabbitMq = builder.Configuration.GetSection("RabbitMq");
+builder.Services.Configure<MassTransitHostOptions>(options => options.WaitUntilStarted = true);
 var telegramBotToken = builder.Configuration["TELEGRAM_BOT_TOKEN"];
 
 if (string.IsNullOrWhiteSpace(telegramBotToken))
@@ -55,6 +56,7 @@ builder.Services.AddMassTransit(x =>
 });
 
 var app = builder.Build();
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 // Explicit maintenance command: configures Telegram without starting the HTTP host or bus.
 if (args.Contains("--register-telegram-webhook", StringComparer.Ordinal))

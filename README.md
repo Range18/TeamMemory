@@ -10,7 +10,19 @@
 Analytics сохраняет Telegram-события в PostgreSQL, анализирует группы сообщений через
 OpenAI-совместимый HTTP API модели и публикует события задач, блокеров и риска для Dashboard.
 Запуск описан в [документации Analytics](src/AnalyticsService/README.md).
-GitHub-коннекторы, дайджесты и SignalR — в планах.
+GitHub-коннекторы — в планах. Дайджесты и обновления Mini App через SignalR реализованы в Dashboard.
+
+## Все сервисы одной командой в Docker
+
+Укажите `TELEGRAM_BOT_TOKEN` и `Llama__ModelPath` в корневом `.env`, затем выполните:
+
+```powershell
+docker compose up -d --build --wait
+```
+
+Откройте http://localhost:5173. PostgreSQL проекта доступен на порту 5434.
+Сборка .NET/Node.js, создание обеих БД и запуск всех сервисов выполняются в Docker.
+Подробности — в [инструкции Docker](docs/docker-run.md).
 
 ## Архитектура
 
@@ -25,7 +37,7 @@ flowchart LR
 
 - **Ingestion** — Telegram webhook, публикация `TelegramMessageCreated`.
 - **Analytics** — Telegram inbox, групповой LLM-анализ, задачи и история в PostgreSQL, outbox.
-- **Dashboard** — подписки на `NewTaskReported`, `BlockerDetected`, `TaskAtRisk`; пока логирование приёма.
+- **Dashboard** — хранение событий Analytics в PostgreSQL, дайджест по шаблону, API с проверкой доступа и обновление Mini App через SignalR. [Запуск и контракт](src/DashboardService/README.md).
 
 ## Структура
 
