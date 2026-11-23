@@ -35,14 +35,14 @@ LlmApi__UseJsonMode=true
 
 Полный набор параметров БД, RabbitMQ и обработки указан в `.env.example`. Настройки подключения должны соответствовать фактическим учётным данным PostgreSQL и RabbitMQ; изменение `.env` не меняет пользователей уже работающих контейнеров. Изменение привязки не переносит ранее сохранённые задачи и сообщения между командами.
 
-Порт PostgreSQL-контейнера на хосте задаёт `ANALYTICS_POSTGRES_PORT` (по умолчанию `5432`). Если этот порт занят, задайте свободный, например `5433`, и тот же `Port=5433` в `ConnectionStrings__Analytics`. Внутренний порт контейнера остаётся `5432`.
+Порт PostgreSQL-контейнера на хосте задаёт `ANALYTICS_POSTGRES_PORT` (по умолчанию `5434`). Если этот порт занят, задайте свободный, например `5435`, и тот же `Port=5435` в `ConnectionStrings__Analytics` и `ConnectionStrings__Postgres`. Внутренний порт контейнера остаётся `5432`.
 
 Analytics загружает ближайший `.env`, поднимаясь от каталога приложения вверх, до создания Host. Переменные окружения текущего процесса имеют приоритет и не перезаписываются значениями из файла. После изменения `.env` перезапустите сервис. При развёртывании без `.env` те же настройки можно передавать через переменные окружения.
 
 Из корня репозитория:
 
 ```powershell
-docker compose up -d postgres rabbitmq
+docker compose up -d postgres rabbitmq database-init
 dotnet build TeamMemory.sln
 dotnet run --project src/AnalyticsService/AnalyticsService.csproj
 ```

@@ -1,4 +1,7 @@
 using DotNetEnv;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using IngestionService.Contracts;
 using MassTransit;
 using Shared.Contracts;
@@ -16,6 +19,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 
 var rabbitMq = builder.Configuration.GetSection("RabbitMq");
+builder.Services.Configure<MassTransitHostOptions>(options => options.WaitUntilStarted = true);
 var telegramBotToken = builder.Configuration["TELEGRAM_BOT_TOKEN"];
 
 if (string.IsNullOrWhiteSpace(telegramBotToken))
@@ -25,6 +29,16 @@ if (string.IsNullOrWhiteSpace(telegramBotToken))
 }
 
 builder.Services.AddSingleton<ITelegramBotClient>(_ => new TelegramBotClient(telegramBotToken));
+builder.Services.AddHealthChecks();
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(45));
+
+var webhookSecret = builder.Configuration["TelegramWebhook:SecretToken"];
+if ((!builder.Environment.IsDevelopment() || !string.IsNullOrEmpty(webhookSecret))
+    && (string.IsNullOrEmpty(webhookSecret) || webhookSecret.Length > 256
+        || webhookSecret.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '_' and not '-')))
+{
+    throw new InvalidOperationException("TelegramWebhook:SecretToken must contain 1-256 ASCII letters, digits, underscores or hyphens.");
+}
 
 builder.Services.AddMassTransit(x =>
 {
@@ -42,6 +56,53 @@ builder.Services.AddMassTransit(x =>
 });
 
 var app = builder.Build();
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+// Explicit maintenance command: configures Telegram without starting the HTTP host or bus.
+if (args.Contains("--register-telegram-webhook", StringComparer.Ordinal))
+{
+    var baseUrl = app.Configuration["WEBHOOK_BASE_URL"];
+    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) || uri.Scheme != "https"
+        || uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query)
+        || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo))
+        throw new InvalidOperationException("WEBHOOK_BASE_URL must be an HTTPS origin.");
+
+    try
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await app.Services.GetRequiredService<ITelegramBotClient>().SetWebhook(
+            $"{baseUrl!.TrimEnd('/')}/api/telegram/webhook",
+            allowedUpdates: new[] { UpdateType.Message }, secretToken: webhookSecret,
+            cancellationToken: timeout.Token);
+        app.Logger.LogInformation("Telegram webhook registered successfully.");
+    }
+    catch (Exception)
+    {
+        // Telegram request URLs contain the bot token. Do not log exception details.
+        app.Logger.LogError("Telegram webhook registration failed. Check connectivity, bot token and HTTPS origin.");
+        Environment.ExitCode = 1;
+    }
+    await app.DisposeAsync();
+    return;
+}
+
+app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.Equals("/api/telegram/webhook", StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrEmpty(webhookSecret))
+    {
+        var supplied = context.Request.Headers["X-Telegram-Bot-Api-Secret-Token"].ToString();
+        if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(webhookSecret)))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+    }
+    await next(context);
+});
 
 if (app.Environment.IsDevelopment())
 {
@@ -123,16 +184,18 @@ if (app.Environment.IsDevelopment())
     else
     {
         var webhookUrl = $"{webhookBaseUrl.TrimEnd('/')}/api/telegram/webhook";
-        var botClient = app.Services.GetRequiredService<ITelegramBotClient>();
 
         try
         {
-            await botClient.SetWebhook(webhookUrl, allowedUpdates: new[] { UpdateType.Message });
+            var botClient = app.Services.GetRequiredService<ITelegramBotClient>();
+            await botClient.SetWebhook(webhookUrl, allowedUpdates: new[] { UpdateType.Message }, secretToken: webhookSecret);
             app.Logger.LogInformation("Telegram webhook set: {WebhookUrl}", webhookUrl);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            app.Logger.LogError(ex, "Failed to set Telegram webhook: {WebhookUrl}", webhookUrl);
+            // Do not stop the service when the token is missing or invalid:
+            // the Development-only POST /api/dev/telegram/messages still works.
+            app.Logger.LogError("Failed to set Telegram webhook. Check TELEGRAM_BOT_TOKEN and WEBHOOK_BASE_URL.");
         }
     }
 }

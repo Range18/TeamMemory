@@ -3,7 +3,7 @@ services:
     image: postgres:17
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${ANALYTICS_POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${ANALYTICS_POSTGRES_PORT:-5434}:5432"
     environment:
       POSTGRES_DB: analytics
       POSTGRES_USER: teammemory
@@ -15,6 +15,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
   rabbitmq:
     image: rabbitmq:4.4-management
     hostname: teammemory-rabbitmq
@@ -34,6 +35,106 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  database-init:
+    image: postgres:17
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: teammemory
+      PGPASSWORD: teammemory
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for database in analytics group_dashboard; do
+          if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$database'" | grep -qx 1; then
+            createdb --owner="$$PGUSER" "$$database"
+          fi
+        done
+
+  analytics:
+    build:
+      context: .
+      target: analytics
+    restart: unless-stopped
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__Analytics: Host=postgres;Port=5432;Database=analytics;Username=teammemory;Password=teammemory
+      RabbitMq__Host: rabbitmq
+      LlmApi__Endpoint: ${LlmApi__Endpoint:-https://api.deepseek.com/chat/completions}
+      LlmApi__Model: ${LlmApi__Model:-deepseek-flash}
+      LlmApi__ApiKey: ${LlmApi__ApiKey:-}
+      LlmApi__MaxTokens: ${LlmApi__MaxTokens:-1500}
+      LlmApi__TimeoutSeconds: ${LlmApi__TimeoutSeconds:-300}
+      LlmApi__UseJsonMode: ${LlmApi__UseJsonMode:-true}
+
+  dashboard:
+    build:
+      context: .
+      target: dashboard
+    restart: unless-stopped
+    depends_on:
+      database-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=group_dashboard;Username=teammemory;Password=teammemory
+      RabbitMq__Host: rabbitmq
+      Telegram__BotToken: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      MiniApp__DevelopmentManagerId: ${MINIAPP_DEVELOPMENT_MANAGER_ID:-123456789}
+      Demo__SeedGroupChatId: ${DEMO_GROUP_CHAT_ID:--1001234567890}
+      Demo__SeedGroupTitle: ${DEMO_GROUP_TITLE:-Demo Team}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  ingestion:
+    build:
+      context: .
+      target: ingestion
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5081:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      RabbitMq__Host: rabbitmq
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      TelegramWebhook__SecretToken: ${TELEGRAM_WEBHOOK_SECRET:-}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+        restart: true
+    ports:
+      - "127.0.0.1:5173:80"
 
 volumes:
   analytics-data:
