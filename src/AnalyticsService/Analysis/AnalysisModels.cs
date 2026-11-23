@@ -21,6 +21,15 @@ public sealed class AnalyticsOptions : IValidatableObject
 {
     public Dictionary<string, string> ChatTeams { get; set; } = [];
 
+    public string GetTeamId(long chatId)
+    {
+        var id = chatId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (ChatTeams.TryGetValue(id, out var teamId) && !string.IsNullOrWhiteSpace(teamId))
+            return teamId;
+
+        return id;
+    }
+
     [Range(1, int.MaxValue)]
     public int IdleSeconds { get; set; } = 60;
 

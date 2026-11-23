@@ -50,7 +50,7 @@ flowchart LR
 
 ### 1. Приём и inbox
 
-`TelegramMessageCreated` преобразуется в `TelegramMessageDto` с привязкой `ChatId → TeamId` из `Analytics:ChatTeams`. DTO проверяет обязательные поля, диапазоны, длину текста, источник и непустые идентификаторы через DataAnnotations; ошибки собираются в `ArgumentException`, исключённое из повторных попыток доставки. Идентификатор сотрудника берётся из `SenderId`, имя автора — из `SenderUsername`. В payload сохраняется исходное событие, а не DTO.
+`TelegramMessageCreated` преобразуется в `TelegramMessageDto`. По умолчанию `TeamId` равен строковому `ChatId`; непустая явная привязка `ChatId → TeamId` из `Analytics:ChatTeams` переопределяет это значение. Сообщения без привязки принимаются, а разные чаты по умолчанию относятся к разным командам. DTO проверяет обязательные поля, диапазоны, длину текста, источник и непустые идентификаторы через DataAnnotations; ошибки собираются в `ArgumentException`, исключённое из повторных попыток доставки. Идентификатор сотрудника берётся из `SenderId`, имя автора — из `SenderUsername`. В payload сохраняется исходное событие, а не DTO.
 
 Событие сохраняется в `inbox_events` через EF Core, включая исходный payload и время получения. `ThreadId = null` нормализуется в `0`. Дедупликация выполняется ограничениями БД по `event_id` и `(source_instance, chat_id, message_id)`; ошибка уникальности при вставке inbox трактуется как повторная доставка.
 
@@ -146,7 +146,7 @@ AND (текущее UTC-время - started_at) в днях > estimate_days × 
 
 | Настройка | Значение |
 | --- | --- |
-| `Analytics:ChatTeams` | Пустой словарь; необходима явная привязка чатов |
+| `Analytics:ChatTeams` | Необязательные переопределения команды; по умолчанию `TeamId = ChatId` строкой |
 | `IdleSeconds` / `MaxWaitSeconds` | 60 / 300 секунд |
 | `MaxMessages` / `PollSeconds` | 100 / 5 секунд |
 | `MaxAttempts` / `MinimumConfidence` | 5 / 0.85 |

@@ -44,6 +44,15 @@ internal static class ValidationChecks
         }
 
         AssertValid(new AnalyticsOptions(), true);
+        var teamOptions = new AnalyticsOptions();
+        if (teamOptions.GetTeamId(-5551321053) != "-5551321053" || teamOptions.GetTeamId(-200) != "-200")
+            throw new Exception("Chats without a team mapping must use their own chat ID.");
+        teamOptions.ChatTeams["-5551321053"] = "custom-team";
+        if (teamOptions.GetTeamId(-5551321053) != "custom-team")
+            throw new Exception("Explicit team mapping must retain priority.");
+        teamOptions.ChatTeams["-5551321053"] = " ";
+        if (teamOptions.GetTeamId(-5551321053) != "-5551321053")
+            throw new Exception("Empty team mapping must fall back to chat ID.");
         AssertValid(new LlmApiOptions(), true);
         AssertValid(new AnalyticsOptions { MaxWaitSeconds = 59 }, false);
         AssertValid(new AnalyticsOptions { MaxMessages = 101 }, false);

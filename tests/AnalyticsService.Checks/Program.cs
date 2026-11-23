@@ -70,13 +70,12 @@ async Task CheckDeduplication()
     await using var db = factory.CreateDbContext();
     Assert(await db.InboxEvents.CountAsync(ct) == 1, "Concurrent deliveries must be deduplicated.");
     Assert((await db.InboxEvents.SingleAsync(ct)).Text == message.Text, "Duplicate must not overwrite text.");
-    try
-    {
-        await store.Accept(message with { ChatId = -300 }, ct);
-        throw new Exception("Unbound chat was accepted.");
-    }
-    catch (ArgumentException) { }
-    Console.WriteLine("PASS: concurrent deduplication and chat validation");
+    await store.Accept(message with { EventId = Guid.NewGuid(), ChatId = -300 }, ct);
+    var unbound = await db.InboxEvents.SingleAsync(e => e.ChatId == -300, ct);
+    Assert(unbound.TeamId == "-300", "Unmapped chat must use its chat ID as TeamId.");
+    db.InboxEvents.Remove(unbound);
+    await db.SaveChangesAsync(ct);
+    Console.WriteLine("PASS: concurrent deduplication and automatic chat team assignment");
 }
 
 async Task CheckBatchingAndApplication()

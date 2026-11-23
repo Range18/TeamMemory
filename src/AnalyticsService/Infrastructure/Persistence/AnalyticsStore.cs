@@ -21,9 +21,7 @@ public sealed class AnalyticsStore(IDbContextFactory<AnalyticsDbContext> context
 
     public async Task Accept(TelegramMessageCreated message, CancellationToken ct)
     {
-        var chatId = message.ChatId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        options.Value.ChatTeams.TryGetValue(chatId, out var teamId);
-        var dto = TelegramMessageDto.FromEvent(message, teamId);
+        var dto = TelegramMessageDto.FromEvent(message, options.Value.GetTeamId(message.ChatId));
         dto.Validate();
 
         await using var db = await contextFactory.CreateDbContextAsync(ct);

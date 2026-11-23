@@ -38,7 +38,7 @@ public sealed record TelegramMessageDto
     [NotDefault]
     public DateTimeOffset OccurredAt { get; init; }
 
-    [Required(ErrorMessage = "Chat is not bound to a team in Analytics:ChatTeams.")]
+    [Required]
     public string? TeamId { get; init; }
 
     public static TelegramMessageDto FromEvent(TelegramMessageCreated message, string? teamId) => new()

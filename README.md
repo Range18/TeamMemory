@@ -60,7 +60,7 @@ Copy-Item .env.example .env
 | `LlmApi__ApiKey` | API-ключ LLM |
 | `ConnectionStrings__Analytics` | Строка подключения Analytics к PostgreSQL |
 | `RabbitMq__*` | Подключение приложения к RabbitMQ |
-| `Analytics__ChatTeams__<ChatId>` | Привязка Telegram-чата к команде |
+| `Analytics__ChatTeams__<ChatId>` | Необязательное переопределение команды; по умолчанию используется ID чата |
 | `Analytics__*`, `LlmApi__*` | Интервалы, лимиты и остальные параметры; полный набор в `.env.example` |
 
 `WEBHOOK_BASE_URL` указывается без завершающего `/`. Ingestion и Analytics загружают `.env` при старте. Переменные ОС имеют приоритет над `.env`. После изменения файла сервис нужно перезапустить. Подробности настройки LLM — в [README Analytics](src/AnalyticsService/README.md).
@@ -164,7 +164,7 @@ Analytics подписан на все восемь конкретных соб�
 ## Ограничения
 
 - GitHub webhooks не реализованы.
-- Нет дайджестов и SignalR. Для AI-анализа нужно настроить доступный LLM API, модель и привязку чата к команде.
+- Нет дайджестов и SignalR. Для AI-анализа нужно настроить доступный LLM API и модель; команда определяется автоматически по ID чата.
 - Нет `secret_token` для Telegram webhook и HMAC для GitHub.
 - Inbox/outbox Analytics хранятся в PostgreSQL. Редактирования Telegram и Git пока только логируются; CI отсутствует.
 
