@@ -100,6 +100,35 @@ ssh -i ~/.ssh/id_ed25519 yc-user@81.26.181.247 `
   "cd ~/TeamMemory && sudo docker compose --env-file .env.production -f docker-compose.production.yml logs -f dashboard analytics ingestion proxy"
 ```
 
+## Живые логи в tmux
+
+`tmux` переживает обрыв SSH: лог-процессы остаются на VM. Запуск сессии:
+
+```bash
+cd ~/TeamMemory
+bash deploy/vm-start-logs.sh
+tmux attach -t logs
+```
+
+Внутри три панели:
+
+- `ingestion` — входящие сообщения и `EventId`;
+- `analytics` — получение события, вызов LLM и `Applied batch`;
+- `dashboard` — `Received NewTaskReported`.
+
+Полезные клавиши: `Ctrl+B`, затем `d` — отцепиться; `Ctrl+B` + стрелки — переключение панелей.
+
+После обрыва SSH:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 yc-user@81.26.181.247
+tmux attach -t logs
+```
+
+Если VM перезагружалась, tmux-сессия пропадает; запустите `bash deploy/vm-start-logs.sh` заново.
+
+Закрыть сессию: `tmux kill-session -t logs`.
+
 ## Обновить код
 
 ```powershell
